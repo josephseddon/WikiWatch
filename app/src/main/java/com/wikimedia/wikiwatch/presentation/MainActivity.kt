@@ -33,6 +33,8 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.withStyle
 import androidx.compose.foundation.text.ClickableText
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.focus.focusRequester
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.runtime.*
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
@@ -69,29 +71,56 @@ class MainActivity : ComponentActivity() {
 fun WikiWatchApp() {
     WikiwatchTheme {
         var currentScreen by remember { mutableStateOf<Screen>(Screen.Search()) }
+        // Back stack for article history
+        val articleBackStack = remember { mutableStateListOf<String>() }
+        // Forward stack for articles you went back from
+        val articleForwardStack = remember { mutableStateListOf<String>() }
 
         when (val screen = currentScreen) {
             is Screen.Search -> SearchScreen(
                 initialQuery = screen.initialQuery,
                 previousArticle = screen.previousArticle,
+                autoFocus = screen.autoFocus,
                 onArticleClick = { result ->
+                    articleForwardStack.clear()
                     currentScreen = Screen.Article(result.title)
                 },
                 onBackToArticle = { title ->
                     currentScreen = Screen.Article(title)
+                },
+                onNearbyClick = {
+                    currentScreen = Screen.NearbyMap
                 }
             )
             is Screen.Article -> ArticleScreen(
                 title = screen.title,
-                onBack = { currentScreen = Screen.Search() },
+                onBack = { 
+                    if (articleBackStack.isNotEmpty()) {
+                        // Go back to previous article
+                        articleForwardStack.add(screen.title)
+                        val previousArticle = articleBackStack.removeLast()
+                        currentScreen = Screen.Article(previousArticle)
+                    } else {
+                        // No article history, go to search
+                        currentScreen = Screen.Search() 
+                    }
+                },
                 onSwipeToNext = { nextTitle ->
+                    articleBackStack.add(screen.title)
+                    articleForwardStack.clear()
                     currentScreen = Screen.Article(nextTitle)
                 },
-                onSearch = { query ->
-                    currentScreen = Screen.Search(query, screen.title)
-                },
+                onSearch = { currentScreen = Screen.Search(autoFocus = true) },
                 onOpenMap = { lat, lon ->
                     currentScreen = Screen.Map(lat, lon, screen.title, screen.title)
+                },
+                forwardArticle = articleForwardStack.lastOrNull(),
+                onForward = {
+                    if (articleForwardStack.isNotEmpty()) {
+                        articleBackStack.add(screen.title)
+                        val forwardArticle = articleForwardStack.removeLast()
+                        currentScreen = Screen.Article(forwardArticle)
+                    }
                 }
             )
             is Screen.Map -> MapScreen(
@@ -100,25 +129,36 @@ fun WikiWatchApp() {
                 title = screen.title,
                 onBack = { currentScreen = Screen.Article(screen.previousArticle) }
             )
+            is Screen.NearbyMap -> NearbyMapScreen(
+                onBack = { currentScreen = Screen.Search() },
+                onArticleClick = { title ->
+                    articleForwardStack.clear()
+                    currentScreen = Screen.Article(title)
+                }
+            )
         }
     }
 }
 
 sealed class Screen {
-    data class Search(val initialQuery: String = "", val previousArticle: String? = null) : Screen()
+    data class Search(val initialQuery: String = "", val previousArticle: String? = null, val autoFocus: Boolean = false) : Screen()
     data class Article(val title: String) : Screen()
     data class Map(val lat: Double, val lon: Double, val title: String, val previousArticle: String) : Screen()
+    object NearbyMap : Screen()
 }
 
 @Composable
 fun SearchScreen(
     initialQuery: String = "",
     previousArticle: String? = null,
+    autoFocus: Boolean = false,
     onArticleClick: (SearchResult) -> Unit,
     onBackToArticle: (String) -> Unit = {},
+    onNearbyClick: () -> Unit = {},
     viewModel: SearchViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
 ) {
     var query by remember { mutableStateOf(initialQuery) }
+    val focusRequester = remember { androidx.compose.ui.focus.FocusRequester() }
     
     // Trigger search if initial query provided
     LaunchedEffect(initialQuery) {
@@ -126,6 +166,14 @@ fun SearchScreen(
             viewModel.search(initialQuery)
         }
     }
+    
+    // Auto focus keyboard when coming from article search icon
+    LaunchedEffect(autoFocus) {
+        if (autoFocus) {
+            focusRequester.requestFocus()
+        }
+    }
+    
     val results by viewModel.results.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val scrollState = rememberScrollState()
@@ -166,33 +214,85 @@ fun SearchScreen(
             )
         }
 
-        Box(
+        // Voice input launcher
+        val voiceLauncher = rememberLauncherForActivityResult(
+            contract = androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
+        ) { result ->
+            if (result.resultCode == android.app.Activity.RESULT_OK) {
+                val spokenText = result.data?.getStringArrayListExtra(android.speech.RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()
+                if (spokenText != null) {
+                    query = spokenText
+                    viewModel.search(spokenText)
+                }
+            }
+        }
+
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(36.dp)
                 .background(Color(0xFF2A2A2A), shape = androidx.compose.foundation.shape.RoundedCornerShape(18.dp))
-                .padding(horizontal = 12.dp),
-            contentAlignment = Alignment.CenterStart
+                .padding(start = 12.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            if (query.isEmpty()) {
-                Text(
-                    text = "Search Wikipedia...",
-                    color = Color.Gray,
-                    fontSize = 14.sp
+            Box(
+                modifier = Modifier.weight(1f),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                if (query.isEmpty()) {
+                    Text(
+                        text = "Search",
+                        color = Color.Gray,
+                        fontSize = 14.sp
+                    )
+                }
+                BasicTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
+                    cursorBrush = SolidColor(Color.White),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(focusRequester),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(onSearch = { 
+                        viewModel.search(query)
+                        focusManager.clearFocus()
+                    })
                 )
             }
-            BasicTextField(
-                value = query,
-                onValueChange = { query = it },
-                textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
-                cursorBrush = SolidColor(Color.White),
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                keyboardActions = KeyboardActions(onSearch = { 
-                    viewModel.search(query)
-                    focusManager.clearFocus()
-                })
+            
+            // Voice input icon inside search bar
+            Image(
+                painter = painterResource(id = R.drawable.ic_mic),
+                contentDescription = "Voice search",
+                modifier = Modifier
+                    .size(28.dp)
+                    .clickable {
+                        val intent = android.content.Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                            putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL, android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                            putExtra(android.speech.RecognizerIntent.EXTRA_PROMPT, "Search Wikipedia")
+                        }
+                        voiceLauncher.launch(intent)
+                    }
+                    .padding(4.dp)
+            )
+        }
+
+        // Nearby map icon
+        Box(
+            modifier = Modifier
+                .padding(top = 8.dp)
+                .size(32.dp)
+                .background(Color(0xFF2A2A2A), shape = androidx.compose.foundation.shape.CircleShape)
+                .clickable { onNearbyClick() },
+            contentAlignment = Alignment.Center
+        ) {
+            Image(
+                painter = painterResource(id = R.drawable.ic_map),
+                contentDescription = "Nearby articles",
+                modifier = Modifier.size(18.dp)
             )
         }
 

@@ -47,8 +47,10 @@ fun ArticleScreen(
     onBack: () -> Unit,
     onSwipeToNext: (String) -> Unit,
     onLinkClick: (String) -> Unit = onSwipeToNext,
-    onSearch: (String) -> Unit = onSwipeToNext,
-    onOpenMap: (Double, Double) -> Unit = { _, _ -> }
+    onSearch: () -> Unit = {},
+    onOpenMap: (Double, Double) -> Unit = { _, _ -> },
+    forwardArticle: String? = null,
+    onForward: () -> Unit = {}
 ) {
     var summary by remember { mutableStateOf<String?>(null) }
     var thumbnailUrl by remember { mutableStateOf<String?>(null) }
@@ -57,9 +59,7 @@ fun ArticleScreen(
     var coordinates by remember { mutableStateOf<com.wikimedia.wikiwatch.data.Coordinate?>(null) }
     var currentIndex by remember { mutableStateOf(0) }
     var isLoading by remember { mutableStateOf(true) }
-    var searchQuery by remember { mutableStateOf("") }
     val scrollState = rememberScrollState()
-    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     val context = LocalContext.current
     
     // Scroll to hide search bar on load
@@ -106,8 +106,8 @@ fun ArticleScreen(
         } else {
             // Calculate gradient alpha based on scroll position - starts dark, fades as you scroll up
             val gradientAlpha = ((scrollState.value - 200) / 300f).coerceIn(0f, 0.7f)
-            // Search bar fades in as you scroll up
-            val searchBarAlpha = (1f - (scrollState.value / 200f)).coerceIn(0f, 1f)
+            // Toolbar fades in as you scroll up
+            val toolbarAlpha = (1f - (scrollState.value / 200f)).coerceIn(0f, 1f)
             
             Column(
                 modifier = Modifier
@@ -115,38 +115,48 @@ fun ArticleScreen(
                     .verticalScroll(scrollState)
                     .padding(16.dp)
             ) {
-                // Search bar hidden above - scroll down to reveal
-                Box(
+                // Toolbar hidden above - scroll up to reveal
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 24.dp, bottom = 48.dp)
-                        .height(36.dp)
-                        .alpha(searchBarAlpha)
-                        .background(Color(0xFF2A2A2A), shape = androidx.compose.foundation.shape.RoundedCornerShape(18.dp))
-                        .padding(horizontal = 12.dp),
-                    contentAlignment = Alignment.CenterStart
+                        .padding(top = 24.dp, bottom = 24.dp)
+                        .alpha(toolbarAlpha),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    if (searchQuery.isEmpty()) {
-                        Text(
-                            text = "Search Wikipedia...",
-                            color = Color.Gray,
-                            fontSize = 14.sp
+                    // Back button
+                    Text(
+                        text = "←",
+                        color = Color.White,
+                        fontSize = 24.sp,
+                        modifier = Modifier
+                            .clickable { onBack() }
+                            .padding(8.dp)
+                    )
+                    
+                    // Search button in token
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .background(Color(0xFF2A2A2A), shape = androidx.compose.foundation.shape.CircleShape)
+                            .clickable { onSearch() },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Image(
+                            painter = painterResource(id = R.drawable.ic_search),
+                            contentDescription = "Search",
+                            modifier = Modifier.size(18.dp)
                         )
                     }
-                    androidx.compose.foundation.text.BasicTextField(
-                        value = searchQuery,
-                        onValueChange = { searchQuery = it },
-                        textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
-                        cursorBrush = androidx.compose.ui.graphics.SolidColor(Color.White),
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                            imeAction = androidx.compose.ui.text.input.ImeAction.Search
-                        ),
-                        keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = {
-                            focusManager.clearFocus()
-                            onSearch(searchQuery)
-                        })
+                    
+                    // Forward button (darkened when no forward article)
+                    Text(
+                        text = "→",
+                        color = if (forwardArticle != null) Color.White else Color.DarkGray,
+                        fontSize = 24.sp,
+                        modifier = Modifier
+                            .clickable(enabled = forwardArticle != null) { onForward() }
+                            .padding(8.dp)
                     )
                 }
                 

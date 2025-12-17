@@ -151,5 +151,40 @@ object WikipediaRepository {
             emptyList()
         }
     }
+
+    suspend fun geoSearch(lat: Double, lon: Double): List<GeoSearchResult> = withContext(Dispatchers.IO) {
+        try {
+            val response = api.geoSearch("$lat|$lon")
+            val results = response.query?.geosearch ?: emptyList()
+            
+            // Get thumbnails and descriptions for results
+            if (results.isNotEmpty()) {
+                val titles = results.joinToString("|") { it.title }
+                val imagesResponse = api.getPageImages(titles)
+                val pageData = imagesResponse.query?.pages?.values?.associate { 
+                    it.title to Pair(it.thumbnail?.source, it.description)
+                } ?: emptyMap()
+                
+                val resultsWithData = results.map { result ->
+                    val data = pageData[result.title]
+                    result.copy(
+                        thumbnailUrl = data?.first,
+                        description = data?.second
+                    )
+                }
+                
+                Log.d("WikiWatch", "GeoSearch found ${resultsWithData.size} articles")
+                return@withContext resultsWithData
+            }
+            
+            Log.d("WikiWatch", "GeoSearch found ${results.size} articles")
+            results
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e("WikiWatch", "GeoSearch error: ${e.message}", e)
+            emptyList()
+        }
+    }
 }
 

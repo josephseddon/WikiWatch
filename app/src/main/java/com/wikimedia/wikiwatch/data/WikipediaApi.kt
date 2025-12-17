@@ -65,7 +65,8 @@ data class PageImagesQuery(
 data class PageImageInfo(
     val pageid: Long?,
     val title: String?,
-    val thumbnail: PageThumbnail?
+    val thumbnail: PageThumbnail?,
+    val description: String?
 )
 
 data class PageThumbnail(
@@ -113,6 +114,24 @@ data class Coordinate(
     val globe: String?
 )
 
+data class GeoSearchResponse(
+    val query: GeoSearchQuery?
+)
+
+data class GeoSearchQuery(
+    val geosearch: List<GeoSearchResult>?
+)
+
+data class GeoSearchResult(
+    val pageid: Long,
+    val title: String,
+    val lat: Double,
+    val lon: Double,
+    val dist: Double,
+    val thumbnailUrl: String? = null,
+    val description: String? = null
+)
+
 interface WikipediaApi {
     @GET("w/api.php?action=query&list=prefixsearch&format=json")
     suspend fun prefixSearch(
@@ -120,7 +139,7 @@ interface WikipediaApi {
         @Query("pslimit") limit: Int = 10
     ): PrefixSearchResponse
 
-    @GET("w/api.php?action=query&prop=pageimages&format=json&pithumbsize=150")
+    @GET("w/api.php?action=query&prop=pageimages|description&format=json&pithumbsize=150")
     suspend fun getPageImages(
         @Query("titles") titles: String
     ): PageImagesResponse
@@ -152,4 +171,9 @@ interface WikipediaApi {
     suspend fun getSummary(
         @Path("title") title: String
     ): SummaryResponse
+
+    @GET("w/api.php?action=query&list=geosearch&format=json&gslimit=20&gsradius=10000")
+    suspend fun geoSearch(
+        @Query("gscoord") coordinates: String
+    ): GeoSearchResponse
 }

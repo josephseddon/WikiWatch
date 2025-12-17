@@ -78,7 +78,7 @@ fun MapScreen(
                         .position(location)
                         .title(title)
                 )
-                googleMap.moveCamera(CameraUpdateFactory.newLatLngZoom(location, 12f))
+                googleMap.moveCamera(CameraUpdateFactory.newLatLngZoom(location, 8f))
                 googleMap.uiSettings.isZoomControlsEnabled = false
             }
         }

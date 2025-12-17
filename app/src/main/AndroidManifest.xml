@@ -3,6 +3,8 @@
 
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     
     <queries>
         <intent>
@@ -34,7 +36,7 @@
         
         <meta-data
             android:name="com.google.android.geo.API_KEY"
-            android:value="${MAPS_API_KEY}" />
+            android:value="AIzaSyBjh2zV4W-fxxDR3GScbwjjo9oO9GIHG6Y" />
 
         <activity
             android:name=".presentation.MainActivity"
