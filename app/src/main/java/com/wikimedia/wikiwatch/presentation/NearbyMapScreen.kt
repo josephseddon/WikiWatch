@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -312,10 +313,11 @@ fun NearbyMapScreen(
 
         Chip(
             onClick = onBack,
-            label = { Text("← Back") },
+            label = { Text("← Back", fontSize = 10.sp) },
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                .padding(top = 4.dp),
+                .padding(top = 4.dp)
+                .height(32.dp),
             colors = ChipDefaults.secondaryChipColors()
         )
         

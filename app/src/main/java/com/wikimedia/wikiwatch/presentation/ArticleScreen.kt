@@ -202,33 +202,42 @@ fun ArticleScreen(
                         }
                     )
                 }
-                Row(
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(bottom = 8.dp),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
+                        .padding(
+                            top = if (thumbnailUrl == null) 16.dp else 0.dp,
+                            bottom = 8.dp
+                        ),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Text(
-                        text = title,
-                        color = Color.White,
-                        fontSize = 16.sp,
-                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
-                        fontFamily = FontFamily.Serif,
-                        textAlign = TextAlign.Center
-                    )
-                    if (coordinates != null) {
-                        Icon(
-                            painter = painterResource(id = R.drawable.ic_map_pin),
-                            contentDescription = "Open in Maps",
-                            tint = Color(0xFF6BA5FF),
-                            modifier = Modifier
-                                .padding(start = 8.dp)
-                                .size(18.dp)
-                                .clickable {
-                                    onOpenMap(coordinates!!.lat, coordinates!!.lon)
-                                }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth(),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = title,
+                            color = Color.White,
+                            fontSize = 16.sp,
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                            fontFamily = FontFamily.Serif,
+                            textAlign = TextAlign.Center
                         )
+                        if (coordinates != null) {
+                            Icon(
+                                painter = painterResource(id = R.drawable.ic_map_pin),
+                                contentDescription = "Open in Maps",
+                                tint = Color(0xFF6BA5FF),
+                                modifier = Modifier
+                                    .padding(start = 8.dp)
+                                    .size(18.dp)
+                                    .clickable {
+                                        onOpenMap(coordinates!!.lat, coordinates!!.lon)
+                                    }
+                            )
+                        }
                     }
                 }
                 LinkedText(

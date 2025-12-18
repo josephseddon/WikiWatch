@@ -4,6 +4,7 @@ import android.os.Bundle
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
@@ -15,6 +16,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -85,10 +87,11 @@ fun MapScreen(
         
         Chip(
             onClick = onBack,
-            label = { Text("← Back") },
+            label = { Text("← Back", fontSize = 10.sp) },
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                .padding(top = 4.dp),
+                .padding(top = 4.dp)
+                .height(32.dp),
             colors = ChipDefaults.secondaryChipColors()
         )
     }

@@ -23,3 +23,4 @@ class WikiWatchApp : Application(), ImageLoaderFactory {
 }
 
 
+

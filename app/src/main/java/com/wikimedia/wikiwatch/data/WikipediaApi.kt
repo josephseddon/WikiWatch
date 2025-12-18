@@ -176,4 +176,12 @@ interface WikipediaApi {
     suspend fun geoSearch(
         @Query("gscoord") coordinates: String
     ): GeoSearchResponse
+
+    @GET("api/rest_v1/feed/did-you-know")
+    suspend fun getDidYouKnow(): List<DidYouKnowEntry>
 }
+
+data class DidYouKnowEntry(
+    val html: String,
+    val text: String
+)

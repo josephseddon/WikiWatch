@@ -9,6 +9,8 @@ import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 
 object WikipediaRepository {
+    private var currentLanguageCode = "en"
+    
     private val client = OkHttpClient.Builder()
         .addInterceptor { chain ->
             val request = chain.request().newBuilder()
@@ -18,13 +20,46 @@ object WikipediaRepository {
         }
         .build()
 
-    private val api: WikipediaApi by lazy {
-        Retrofit.Builder()
-            .baseUrl("https://en.wikipedia.org/")
+    private fun getApi(languageCode: String = currentLanguageCode): WikipediaApi {
+        return Retrofit.Builder()
+            .baseUrl("https://$languageCode.wikipedia.org/")
             .client(client)
             .addConverterFactory(GsonConverterFactory.create())
             .build()
             .create(WikipediaApi::class.java)
+    }
+    
+    private val api: WikipediaApi
+        get() = getApi()
+    
+    fun setLanguage(languageCode: String) {
+        currentLanguageCode = languageCode
+    }
+    
+    fun getCurrentLanguage(): String = currentLanguageCode
+    
+    suspend fun getLanguages(): List<WikipediaLanguage> = withContext(Dispatchers.IO) {
+        try {
+            val request = okhttp3.Request.Builder()
+                .url("https://raw.githubusercontent.com/wikimedia/wikipedia-ios/main/Wikipedia/Code/wikipedia-languages.json")
+                .header("User-Agent", "WikiWatch/1.0 (WearOS App)")
+                .build()
+            
+            val response = client.newCall(request).execute()
+            val json = response.body?.string() ?: return@withContext emptyList()
+            
+            val gson = com.google.gson.Gson()
+            val type = object : com.google.gson.reflect.TypeToken<List<WikipediaLanguage>>() {}.type
+            val languages = gson.fromJson<List<WikipediaLanguage>>(json, type) ?: emptyList()
+            
+            Log.d("WikiWatch", "Loaded ${languages.size} languages")
+            languages
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e("WikiWatch", "Failed to load languages: ${e.message}", e)
+            emptyList()
+        }
     }
 
     suspend fun search(query: String): List<SearchResult> = withContext(Dispatchers.IO) {
@@ -42,17 +77,20 @@ object WikipediaRepository {
                 response.query?.search ?: emptyList()
             }
             
-            // Fetch thumbnails for results
+            // Fetch thumbnails using the same API properties as the lead image (REST API summary)
             if (results.isNotEmpty()) {
-                val titles = results.joinToString("|") { it.title }
-                val imagesResponse = api.getPageImages(titles)
-                val thumbnails = imagesResponse.query?.pages?.values?.associate { 
-                    it.title to it.thumbnail?.source 
-                } ?: emptyMap()
-                
-                results.map { result ->
-                    result.copy(thumbnailUrl = thumbnails[result.title])
+                val resultsWithThumbnails = results.map { result ->
+                    try {
+                        val encodedTitle = result.title.replace(" ", "_")
+                        val summaryResponse = getApi().getSummary(encodedTitle)
+                        val thumbnailUrl = summaryResponse?.thumbnail?.source ?: summaryResponse?.originalimage?.source
+                        result.copy(thumbnailUrl = thumbnailUrl)
+                    } catch (e: Exception) {
+                        Log.e("WikiWatch", "Failed to get thumbnail for ${result.title}: ${e.message}")
+                        result
+                    }
                 }
+                resultsWithThumbnails
             } else {
                 results
             }
@@ -183,6 +221,19 @@ object WikipediaRepository {
             throw e
         } catch (e: Exception) {
             Log.e("WikiWatch", "GeoSearch error: ${e.message}", e)
+            emptyList()
+        }
+    }
+
+    suspend fun getDidYouKnow(): List<com.wikimedia.wikiwatch.data.DidYouKnowEntry> = withContext(Dispatchers.IO) {
+        try {
+            val response = api.getDidYouKnow()
+            Log.d("WikiWatch", "Fetched ${response.size} DYK entries")
+            response
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e("WikiWatch", "DYK error: ${e.message}", e)
             emptyList()
         }
     }

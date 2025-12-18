@@ -22,6 +22,7 @@ import coil.ImageLoader
 import okhttp3.OkHttpClient
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.offset
@@ -37,10 +38,13 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.runtime.*
 import androidx.compose.runtime.snapshots.SnapshotStateList
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
@@ -90,6 +94,9 @@ fun WikiWatchApp() {
                 },
                 onNearbyClick = {
                     currentScreen = Screen.NearbyMap
+                },
+                onLanguageClick = {
+                    currentScreen = Screen.LanguageSelection
                 }
             )
             is Screen.Article -> ArticleScreen(
@@ -136,6 +143,14 @@ fun WikiWatchApp() {
                     currentScreen = Screen.Article(title)
                 }
             )
+            is Screen.LanguageSelection -> LanguageSelectionScreen(
+                currentLanguageCode = com.wikimedia.wikiwatch.data.WikipediaRepository.getCurrentLanguage(),
+                onLanguageSelected = { language ->
+                    com.wikimedia.wikiwatch.data.WikipediaRepository.setLanguage(language.languageCode)
+                    currentScreen = Screen.Search()
+                },
+                onBack = { currentScreen = Screen.Search() }
+            )
         }
     }
 }
@@ -145,6 +160,7 @@ sealed class Screen {
     data class Article(val title: String) : Screen()
     data class Map(val lat: Double, val lon: Double, val title: String, val previousArticle: String) : Screen()
     object NearbyMap : Screen()
+    object LanguageSelection : Screen()
 }
 
 @Composable
@@ -155,10 +171,21 @@ fun SearchScreen(
     onArticleClick: (SearchResult) -> Unit,
     onBackToArticle: (String) -> Unit = {},
     onNearbyClick: () -> Unit = {},
+    onLanguageClick: () -> Unit = {},
     viewModel: SearchViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
 ) {
     var query by remember { mutableStateOf(initialQuery) }
     val focusRequester = remember { androidx.compose.ui.focus.FocusRequester() }
+    val selectedLanguageCode = com.wikimedia.wikiwatch.data.WikipediaRepository.getCurrentLanguage()
+    var didYouKnowEntry by remember { mutableStateOf<com.wikimedia.wikiwatch.data.DidYouKnowEntry?>(null) }
+    
+    // Load DYK feed
+    LaunchedEffect(Unit) {
+        val entries = com.wikimedia.wikiwatch.data.WikipediaRepository.getDidYouKnow()
+        if (entries.isNotEmpty()) {
+            didYouKnowEntry = entries.random()
+        }
+    }
     
     // Trigger search if initial query provided
     LaunchedEffect(initialQuery) {
@@ -178,6 +205,19 @@ fun SearchScreen(
     val isLoading by viewModel.isLoading.collectAsState()
     val scrollState = rememberScrollState()
     val focusManager = LocalFocusManager.current
+    val density = LocalDensity.current
+    val coroutineScope = rememberCoroutineScope()
+    
+    // Scroll to first result when search results appear
+    LaunchedEffect(results.size) {
+        if (results.isNotEmpty() && !isLoading) {
+            // Scroll down to show first result (approximately after search bar and other UI elements)
+            kotlinx.coroutines.delay(100) // Small delay to ensure layout is complete
+            with(density) {
+                scrollState.animateScrollTo(200.dp.toPx().toInt())
+            }
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -227,14 +267,20 @@ fun SearchScreen(
             }
         }
 
-        Row(
+        // Search bar with language selector, voice input, and map
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(36.dp)
-                .background(Color(0xFF2A2A2A), shape = androidx.compose.foundation.shape.RoundedCornerShape(18.dp))
-                .padding(start = 12.dp, end = 4.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .padding(bottom = 8.dp)
         ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(36.dp)
+                    .background(Color(0xFF2A2A2A), shape = androidx.compose.foundation.shape.RoundedCornerShape(18.dp))
+                    .padding(start = 12.dp, end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
             Box(
                 modifier = Modifier.weight(1f),
                 contentAlignment = Alignment.CenterStart
@@ -263,12 +309,32 @@ fun SearchScreen(
                 )
             }
             
+            // Language selector - icon + label, just left of voice input
+            Row(
+                modifier = Modifier
+                    .clickable { onLanguageClick() }
+                    .padding(horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Image(
+                    painter = painterResource(id = R.drawable.ic_language),
+                    contentDescription = "Language",
+                    modifier = Modifier.size(18.dp)
+                )
+                Text(
+                    text = selectedLanguageCode.uppercase().take(2),
+                    color = Color.White,
+                    fontSize = 11.sp
+                )
+            }
+            
             // Voice input icon inside search bar
             Image(
                 painter = painterResource(id = R.drawable.ic_mic),
                 contentDescription = "Voice search",
                 modifier = Modifier
-                    .size(28.dp)
+                    .size(22.dp)
                     .clickable {
                         val intent = android.content.Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                             putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL, android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
@@ -278,22 +344,53 @@ fun SearchScreen(
                     }
                     .padding(4.dp)
             )
-        }
-
-        // Nearby map icon
-        Box(
-            modifier = Modifier
-                .padding(top = 8.dp)
-                .size(32.dp)
-                .background(Color(0xFF2A2A2A), shape = androidx.compose.foundation.shape.CircleShape)
-                .clickable { onNearbyClick() },
-            contentAlignment = Alignment.Center
-        ) {
+            
+            // Map icon inside search bar
             Image(
                 painter = painterResource(id = R.drawable.ic_map),
                 contentDescription = "Nearby articles",
-                modifier = Modifier.size(18.dp)
+                colorFilter = ColorFilter.tint(Color.White),
+                modifier = Modifier
+                    .size(22.dp)
+                    .clickable { onNearbyClick() }
+                    .padding(4.dp)
             )
+            }
+        }
+        
+        // Did You Know entry
+        didYouKnowEntry?.let { entry ->
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 8.dp)
+                    .background(Color(0xFF1A1A1A), shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                    .padding(12.dp)
+            ) {
+                Column {
+                    Text(
+                        text = "Did you know",
+                        color = Color.White,
+                        fontSize = 11.sp,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                        modifier = Modifier.padding(bottom = 4.dp)
+                    )
+                    HtmlText(
+                        html = entry.html,
+                        onLinkClick = { href ->
+                            // Extract article title from href (handles both full URLs and relative paths)
+                            val title = when {
+                                href.startsWith("http") -> href.substringAfterLast("/").replace("_", " ")
+                                href.startsWith("/wiki/") -> href.substringAfter("/wiki/").replace("_", " ")
+                                else -> href.replace("_", " ")
+                            }
+                            if (title.isNotEmpty()) {
+                                onArticleClick(com.wikimedia.wikiwatch.data.SearchResult(title, 0, null))
+                            }
+                        }
+                    )
+                }
+            }
         }
 
         if (isLoading) {
@@ -330,44 +427,102 @@ fun SearchScreen(
                 .build()
         }
         
-        results.forEach { result ->
-            Chip(
-                onClick = { onArticleClick(result) },
-                label = {
-                    Text(
-                        text = result.title,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                        color = Color.Black
-                    )
-                },
-                icon = {
-                    if (result.thumbnailUrl != null) {
-                        SubcomposeAsyncImage(
-                            model = result.thumbnailUrl,
-                            imageLoader = imageLoader,
-                            contentDescription = null,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier
-                                .size(24.dp)
-                                .clip(CircleShape)
-                        )
-                    } else {
-                        Image(
-                            painter = painterResource(id = R.drawable.placeholder),
-                            contentDescription = null,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier
-                                .size(24.dp)
-                                .clip(CircleShape)
-                        )
-                    }
-                },
+        // Results count with clear button
+        if (results.isNotEmpty()) {
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 2.dp),
-                colors = ChipDefaults.chipColors(backgroundColor = Color.White)
-            )
+                    .padding(vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "${results.size} results",
+                    color = Color.Gray,
+                    fontSize = 12.sp
+                )
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .background(Color(0xFF2A2A2A), shape = CircleShape)
+                        .clickable {
+                            query = ""
+                            viewModel.search("")
+                            coroutineScope.launch {
+                                scrollState.animateScrollTo(0)
+                            }
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Image(
+                        painter = painterResource(id = R.drawable.ic_close),
+                        contentDescription = "Clear",
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+        }
+        
+        results.forEach { result ->
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp)
+            ) {
+                // Chip first (background layer)
+                Chip(
+                    onClick = { onArticleClick(result) },
+                    label = {
+                        Row(
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Spacer(modifier = Modifier.weight(0.25f))
+                            Text(
+                                text = result.title,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                color = Color.White,
+                                modifier = Modifier.weight(0.75f)
+                            )
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp),
+                    colors = ChipDefaults.chipColors(backgroundColor = Color(0xFF2A2A2A))
+                )
+                
+                // Circular thumbnail overlay on top of chip
+                if (result.thumbnailUrl != null) {
+                    SubcomposeAsyncImage(
+                        model = result.thumbnailUrl,
+                        imageLoader = imageLoader,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .size(48.dp)
+                            .align(Alignment.CenterStart)
+                            .clip(CircleShape)
+                    )
+                } else {
+                    // Placeholder: Wikipedia W logo on lighter grey circular background
+                    Box(
+                        modifier = Modifier
+                            .size(48.dp)
+                            .align(Alignment.CenterStart)
+                            .clip(CircleShape)
+                            .background(Color(0xFF999999)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Image(
+                            painter = painterResource(id = R.drawable.wikipedia_logo),
+                            contentDescription = null,
+                            modifier = Modifier.size(24.dp),
+                            colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(Color(0xFFCCCCCC))
+                        )
+                    }
+                }
+            }
         }
     }
 }
