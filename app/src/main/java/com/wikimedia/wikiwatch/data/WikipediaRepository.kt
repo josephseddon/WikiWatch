@@ -1,17 +1,39 @@
 package com.wikimedia.wikiwatch.data
 
+import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import okhttp3.OkHttpClient
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
+import java.util.concurrent.TimeUnit
 
 object WikipediaRepository {
     private var currentLanguageCode = "en"
     
     private val client = OkHttpClient.Builder()
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(10, TimeUnit.SECONDS)
+        .addInterceptor { chain ->
+            val request = chain.request()
+            Log.d("WikiWatch", "WikipediaRepository: Making request to ${request.url}")
+            val startTime = System.currentTimeMillis()
+            try {
+                val response = chain.proceed(request)
+                val endTime = System.currentTimeMillis()
+                Log.d("WikiWatch", "WikipediaRepository: Response ${response.code} from ${request.url} in ${endTime - startTime}ms")
+                response
+            } catch (e: Exception) {
+                val endTime = System.currentTimeMillis()
+                Log.e("WikiWatch", "WikipediaRepository: Request failed to ${request.url} after ${endTime - startTime}ms: ${e.message}", e)
+                throw e
+            }
+        }
         .addInterceptor { chain ->
             val request = chain.request().newBuilder()
                 .header("User-Agent", "WikiWatch/1.0 (WearOS App; contact@example.com)")
@@ -38,26 +60,23 @@ object WikipediaRepository {
     
     fun getCurrentLanguage(): String = currentLanguageCode
     
-    suspend fun getLanguages(): List<WikipediaLanguage> = withContext(Dispatchers.IO) {
+    suspend fun getLanguages(context: Context): List<WikipediaLanguage> = withContext(Dispatchers.IO) {
         try {
-            val request = okhttp3.Request.Builder()
-                .url("https://raw.githubusercontent.com/wikimedia/wikipedia-ios/main/Wikipedia/Code/wikipedia-languages.json")
-                .header("User-Agent", "WikiWatch/1.0 (WearOS App)")
-                .build()
-            
-            val response = client.newCall(request).execute()
-            val json = response.body?.string() ?: return@withContext emptyList()
+            Log.d("WikiWatch", "Loading languages from assets")
+            val inputStream = context.assets.open("wikipedia-languages.json")
+            val json = inputStream.bufferedReader().use { it.readText() }
+            inputStream.close()
             
             val gson = com.google.gson.Gson()
             val type = object : com.google.gson.reflect.TypeToken<List<WikipediaLanguage>>() {}.type
             val languages = gson.fromJson<List<WikipediaLanguage>>(json, type) ?: emptyList()
             
-            Log.d("WikiWatch", "Loaded ${languages.size} languages")
+            Log.d("WikiWatch", "Loaded ${languages.size} languages from assets")
             languages
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.e("WikiWatch", "Failed to load languages: ${e.message}", e)
+            Log.e("WikiWatch", "Failed to load languages from assets: ${e.message}", e)
             emptyList()
         }
     }
@@ -149,18 +168,21 @@ object WikipediaRepository {
 
     suspend fun getCoordinates(title: String): Coordinate? = withContext(Dispatchers.IO) {
         try {
-            val response = api.getCoordinates(title)
+            // URL encode the title for the API call (same as getSummary)
+            val encodedTitle = title.replace(" ", "_")
+            val response = api.getCoordinates(encodedTitle)
             val coordinate = response.query?.pages?.values?.firstOrNull()?.coordinates?.firstOrNull()
             if (coordinate?.globe == "earth") {
-                Log.d("WikiWatch", "Coordinates for '$title': ${coordinate.lat}, ${coordinate.lon}")
+                Log.d("WikiWatch", "Coordinates for '$title': ${coordinate.lat}, ${coordinate.lon}, globe: ${coordinate.globe}")
                 coordinate
             } else {
+                Log.d("WikiWatch", "Coordinates for '$title': globe is '${coordinate?.globe}', not 'earth'")
                 null
             }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.e("WikiWatch", "Coordinates error: ${e.message}", e)
+            Log.e("WikiWatch", "Coordinates error for '$title': ${e.message}", e)
             null
         }
     }
@@ -191,14 +213,30 @@ object WikipediaRepository {
     }
 
     suspend fun geoSearch(lat: Double, lon: Double): List<GeoSearchResult> = withContext(Dispatchers.IO) {
+        Log.d("WikiWatch", "WikipediaRepository: geoSearch coroutine started on ${Thread.currentThread().name}")
         try {
-            val response = api.geoSearch("$lat|$lon")
+            Log.d("WikiWatch", "WikipediaRepository: Starting geoSearch for $lat|$lon")
+            
+            // Add timeout to prevent hanging
+            val response = withTimeout(30000L) { // 30 second timeout
+                Log.d("WikiWatch", "WikipediaRepository: Calling api.geoSearch")
+                api.geoSearch("$lat|$lon")
+            }
+            
+            Log.d("WikiWatch", "WikipediaRepository: api.geoSearch completed, parsing response")
             val results = response.query?.geosearch ?: emptyList()
+            Log.d("WikiWatch", "WikipediaRepository: geoSearch returned ${results.size} results")
             
             // Get thumbnails and descriptions for results
             if (results.isNotEmpty()) {
                 val titles = results.joinToString("|") { it.title }
-                val imagesResponse = api.getPageImages(titles)
+                Log.d("WikiWatch", "WikipediaRepository: Fetching page images for ${results.size} articles")
+                
+                val imagesResponse = withTimeout(30000L) { // 30 second timeout
+                    api.getPageImages(titles)
+                }
+                
+                Log.d("WikiWatch", "WikipediaRepository: Page images fetched, parsing data")
                 val pageData = imagesResponse.query?.pages?.values?.associate { 
                     it.title to Pair(it.thumbnail?.source, it.description)
                 } ?: emptyMap()
@@ -211,29 +249,67 @@ object WikipediaRepository {
                     )
                 }
                 
-                Log.d("WikiWatch", "GeoSearch found ${resultsWithData.size} articles")
+                Log.d("WikiWatch", "WikipediaRepository: GeoSearch complete with ${resultsWithData.size} articles")
                 return@withContext resultsWithData
             }
             
-            Log.d("WikiWatch", "GeoSearch found ${results.size} articles")
+            Log.d("WikiWatch", "WikipediaRepository: GeoSearch found ${results.size} articles (no thumbnails needed)")
             results
+        } catch (e: TimeoutCancellationException) {
+            Log.e("WikiWatch", "WikipediaRepository: GeoSearch timed out after 30 seconds", e)
+            emptyList()
         } catch (e: CancellationException) {
+            Log.e("WikiWatch", "WikipediaRepository: GeoSearch was cancelled", e)
             throw e
         } catch (e: Exception) {
-            Log.e("WikiWatch", "GeoSearch error: ${e.message}", e)
+            Log.e("WikiWatch", "WikipediaRepository: GeoSearch error: ${e.message}", e)
+            e.printStackTrace()
             emptyList()
+        }
+    }
+
+    suspend fun testNetwork(): Boolean = withContext(Dispatchers.IO) {
+        try {
+            Log.d("WikiWatch", "WikipediaRepository: Testing network connectivity...")
+            val testClient = OkHttpClient.Builder()
+                .connectTimeout(5, TimeUnit.SECONDS)
+                .readTimeout(5, TimeUnit.SECONDS)
+                .build()
+            
+            val request = okhttp3.Request.Builder()
+                .url("https://www.wikipedia.org")
+                .build()
+            
+            Log.d("WikiWatch", "WikipediaRepository: Making test request to https://www.wikipedia.org")
+            val response = testClient.newCall(request).execute()
+            val success = response.isSuccessful
+            Log.d("WikiWatch", "WikipediaRepository: Network test result: $success (code: ${response.code}, message: ${response.message})")
+            response.close()
+            success
+        } catch (e: Exception) {
+            Log.e("WikiWatch", "WikipediaRepository: Network test failed: ${e.message}", e)
+            e.printStackTrace()
+            false
         }
     }
 
     suspend fun getDidYouKnow(): List<com.wikimedia.wikiwatch.data.DidYouKnowEntry> = withContext(Dispatchers.IO) {
         try {
-            val response = api.getDidYouKnow()
-            Log.d("WikiWatch", "Fetched ${response.size} DYK entries")
+            Log.d("WikiWatch", "WikipediaRepository: Starting getDidYouKnow")
+            // Add timeout to prevent hanging on DNS resolution failures
+            val response = withTimeout(10000L) { // 10 second timeout
+                api.getDidYouKnow()
+            }
+            Log.d("WikiWatch", "WikipediaRepository: Fetched ${response.size} DYK entries")
             response
+        } catch (e: TimeoutCancellationException) {
+            Log.e("WikiWatch", "WikipediaRepository: getDidYouKnow timed out after 10 seconds", e)
+            emptyList()
         } catch (e: CancellationException) {
+            Log.e("WikiWatch", "WikipediaRepository: getDidYouKnow was cancelled", e)
             throw e
         } catch (e: Exception) {
-            Log.e("WikiWatch", "DYK error: ${e.message}", e)
+            Log.e("WikiWatch", "WikipediaRepository: getDidYouKnow error: ${e.message}", e)
             emptyList()
         }
     }

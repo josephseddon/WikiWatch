@@ -75,6 +75,7 @@ fun ArticleScreen(
         android.util.Log.d("WikiWatch", "Thumbnail URL: $thumbnailUrl")
         pageLinks = WikipediaRepository.getPageLinks(title)
         coordinates = WikipediaRepository.getCoordinates(title)
+        android.util.Log.d("WikiWatch", "Coordinates result for '$title': ${if (coordinates != null) "Found (${coordinates!!.lat}, ${coordinates!!.lon})" else "Not found"}")
         relatedArticles = WikipediaRepository.moreLike(title)
         currentIndex = 0
         isLoading = false
@@ -223,7 +224,10 @@ fun ArticleScreen(
                             fontSize = 16.sp,
                             fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
                             fontFamily = FontFamily.Serif,
-                            textAlign = TextAlign.Center
+                            textAlign = TextAlign.Center,
+                            maxLines = 2,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
                         )
                         if (coordinates != null) {
                             Icon(
@@ -234,6 +238,7 @@ fun ArticleScreen(
                                     .padding(start = 8.dp)
                                     .size(18.dp)
                                     .clickable {
+                                        android.util.Log.d("WikiWatch", "Opening map for coordinates: ${coordinates!!.lat}, ${coordinates!!.lon}")
                                         onOpenMap(coordinates!!.lat, coordinates!!.lon)
                                     }
                             )

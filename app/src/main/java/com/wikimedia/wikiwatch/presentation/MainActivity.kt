@@ -79,6 +79,8 @@ fun WikiWatchApp() {
         val articleBackStack = remember { mutableStateListOf<String>() }
         // Forward stack for articles you went back from
         val articleForwardStack = remember { mutableStateListOf<String>() }
+        // Shared ViewModel for map state - scoped to activity level to persist across navigation
+        val mapViewModel: NearbyMapViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
 
         when (val screen = currentScreen) {
             is Screen.Search -> SearchScreen(
@@ -87,13 +89,13 @@ fun WikiWatchApp() {
                 autoFocus = screen.autoFocus,
                 onArticleClick = { result ->
                     articleForwardStack.clear()
-                    currentScreen = Screen.Article(result.title)
+                    currentScreen = Screen.Article(result.title, Screen.Search())
                 },
                 onBackToArticle = { title ->
                     currentScreen = Screen.Article(title)
                 },
                 onNearbyClick = {
-                    currentScreen = Screen.NearbyMap
+                    currentScreen = Screen.NearbyMap()
                 },
                 onLanguageClick = {
                     currentScreen = Screen.LanguageSelection
@@ -106,42 +108,43 @@ fun WikiWatchApp() {
                         // Go back to previous article
                         articleForwardStack.add(screen.title)
                         val previousArticle = articleBackStack.removeLast()
-                        currentScreen = Screen.Article(previousArticle)
+                        currentScreen = Screen.Article(previousArticle, screen.previousScreen)
                     } else {
-                        // No article history, go to search
-                        currentScreen = Screen.Search() 
+                        // No article history, go back to previous screen (or search if none)
+                        currentScreen = screen.previousScreen ?: Screen.Search()
                     }
                 },
                 onSwipeToNext = { nextTitle ->
                     articleBackStack.add(screen.title)
                     articleForwardStack.clear()
-                    currentScreen = Screen.Article(nextTitle)
+                    currentScreen = Screen.Article(nextTitle, screen.previousScreen)
                 },
                 onSearch = { currentScreen = Screen.Search(autoFocus = true) },
                 onOpenMap = { lat, lon ->
-                    currentScreen = Screen.Map(lat, lon, screen.title, screen.title)
+                    currentScreen = Screen.NearbyMap(initialLat = lat, initialLon = lon, previousScreen = screen)
                 },
                 forwardArticle = articleForwardStack.lastOrNull(),
                 onForward = {
                     if (articleForwardStack.isNotEmpty()) {
                         articleBackStack.add(screen.title)
                         val forwardArticle = articleForwardStack.removeLast()
-                        currentScreen = Screen.Article(forwardArticle)
+                        currentScreen = Screen.Article(forwardArticle, screen.previousScreen)
                     }
                 }
             )
-            is Screen.Map -> MapScreen(
-                lat = screen.lat,
-                lon = screen.lon,
-                title = screen.title,
-                onBack = { currentScreen = Screen.Article(screen.previousArticle) }
-            )
             is Screen.NearbyMap -> NearbyMapScreen(
-                onBack = { currentScreen = Screen.Search() },
+                initialLat = screen.initialLat,
+                initialLon = screen.initialLon,
+                previousScreen = screen.previousScreen,
+                onBack = { 
+                    // Return to previous screen if available, otherwise go to search
+                    currentScreen = screen.previousScreen ?: Screen.Search()
+                },
                 onArticleClick = { title ->
                     articleForwardStack.clear()
-                    currentScreen = Screen.Article(title)
-                }
+                    currentScreen = Screen.Article(title, screen)
+                },
+                viewModel = mapViewModel // Use shared ViewModel scoped to activity
             )
             is Screen.LanguageSelection -> LanguageSelectionScreen(
                 currentLanguageCode = com.wikimedia.wikiwatch.data.WikipediaRepository.getCurrentLanguage(),
@@ -157,9 +160,8 @@ fun WikiWatchApp() {
 
 sealed class Screen {
     data class Search(val initialQuery: String = "", val previousArticle: String? = null, val autoFocus: Boolean = false) : Screen()
-    data class Article(val title: String) : Screen()
-    data class Map(val lat: Double, val lon: Double, val title: String, val previousArticle: String) : Screen()
-    object NearbyMap : Screen()
+    data class Article(val title: String, val previousScreen: Screen? = null) : Screen()
+    data class NearbyMap(val initialLat: Double? = null, val initialLon: Double? = null, val previousScreen: Screen? = null) : Screen()
     object LanguageSelection : Screen()
 }
 

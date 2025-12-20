@@ -26,6 +26,7 @@ import androidx.wear.compose.material.Chip
 import androidx.wear.compose.material.ChipDefaults
 import androidx.wear.compose.material.MaterialTheme
 import androidx.wear.compose.material.Text
+import androidx.compose.ui.platform.LocalContext
 import com.wikimedia.wikiwatch.data.WikipediaLanguage
 import com.wikimedia.wikiwatch.data.WikipediaRepository
 
@@ -35,6 +36,7 @@ fun LanguageSelectionScreen(
     onLanguageSelected: (WikipediaLanguage) -> Unit,
     onBack: () -> Unit
 ) {
+    val context = LocalContext.current
     var allLanguages by remember { mutableStateOf<List<WikipediaLanguage>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
     var filterQuery by remember { mutableStateOf("") }
@@ -42,7 +44,7 @@ fun LanguageSelectionScreen(
     val focusManager = LocalFocusManager.current
 
     LaunchedEffect(Unit) {
-        allLanguages = WikipediaRepository.getLanguages()
+        allLanguages = WikipediaRepository.getLanguages(context)
         isLoading = false
     }
 
