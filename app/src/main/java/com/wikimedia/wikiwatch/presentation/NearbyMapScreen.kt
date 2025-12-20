@@ -282,6 +282,11 @@ fun NearbyMapScreen(
     onArticleClick: (String) -> Unit,
     viewModel: NearbyMapViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
 ) {
+    // Log when composable is created/recreated
+    LaunchedEffect(Unit) {
+        android.util.Log.d("WikiWatch", "NearbyMapScreen: Composable created/recreated - previousScreen=${previousScreen?.javaClass?.simpleName}, initialLat=$initialLat, initialLon=$initialLon")
+        android.util.Log.d("WikiWatch", "NearbyMapScreen: ViewModel state - articles=${viewModel.nearbyArticles.size}, geosearchDone=${viewModel.initialGeosearchDone}, cameraSetup=${viewModel.initialCameraSetup}, markersAdded=${viewModel.markersInitiallyAdded}")
+    }
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     
@@ -352,6 +357,7 @@ fun NearbyMapScreen(
     // Track if we've done the initial camera setup
     // Use ViewModel state which persists across navigation
     var initialCameraSetup by remember { mutableStateOf(viewModel.initialCameraSetup) }
+    
     // Flag to prevent camera idle listener from saving position during restoration
     var isRestoringCamera by remember { mutableStateOf(false) }
     // Store the saved camera position to restore when returning to the map
@@ -374,17 +380,25 @@ fun NearbyMapScreen(
         }
     }
     
-    // Reset camera setup when opening from main view (not from article)
-    // This ensures we don't restore saved position on first open from main view
-    LaunchedEffect(previousScreen) {
-        if (previousScreen !is Screen.Article && previousScreen != null) {
-            // Opening from main view (SearchScreen) - reset camera setup to allow fresh zoom
-            android.util.Log.d("WikiWatch", "NearbyMapScreen: Opening from main view (not article), resetting initialCameraSetup")
-            initialCameraSetup = false
-            viewModel.setInitialCameraSetup(false)
-        } else if (previousScreen == null) {
-            // First time opening (no previous screen) - also reset
-            android.util.Log.d("WikiWatch", "NearbyMapScreen: First time opening (no previous screen), resetting initialCameraSetup")
+    // Handle navigation - sync state when returning from article, reset when first opening
+    // Use navigation stack to reliably detect if we're returning from article
+    LaunchedEffect(Unit) {
+        val isReturning = viewModel.isReturningFromArticle()
+        android.util.Log.d("WikiWatch", "NearbyMapScreen: LaunchedEffect - isReturningFromArticle=$isReturning, ViewModel articles=${viewModel.nearbyArticles.size}, ViewModel cameraSetup=${viewModel.initialCameraSetup}")
+        
+        if (isReturning) {
+            android.util.Log.d("WikiWatch", "NearbyMapScreen: Detected returning from article via navigation stack")
+            // Sync all state from ViewModel when returning - DO NOT reset
+            initialGeosearchDone = viewModel.initialGeosearchDone
+            initialCameraSetup = viewModel.initialCameraSetup // Sync from ViewModel (should be true)
+            nearbyArticles = viewModel.nearbyArticles
+            thumbnailBitmaps = viewModel.thumbnailBitmaps
+            android.util.Log.d("WikiWatch", "NearbyMapScreen: Synced state from ViewModel - geosearchDone=$initialGeosearchDone, cameraSetup=$initialCameraSetup, articles=${viewModel.nearbyArticles.size}, markersAdded=${viewModel.markersInitiallyAdded}")
+            // Pop the Article from stack now that we've checked
+            viewModel.popScreen()
+        } else {
+            // First time opening - reset camera setup
+            android.util.Log.d("WikiWatch", "NearbyMapScreen: First time opening, resetting initialCameraSetup")
             initialCameraSetup = false
             viewModel.setInitialCameraSetup(false)
         }
@@ -516,7 +530,6 @@ fun NearbyMapScreen(
             if (lastLocation != null) {
                 val currentLocation = LatLng(lastLocation.latitude, lastLocation.longitude)
                 userLocation = currentLocation
-                android.util.Log.d("WikiWatch", "NearbyMapScreen: Location updated - ${currentLocation.latitude}, ${currentLocation.longitude}")
                 
                 // Check if user has moved more than 200 meters from last geosearch location
                 // Only check if we're using actual user location (not initial coordinates)
@@ -529,7 +542,6 @@ fun NearbyMapScreen(
                             currentLocation.latitude,
                             currentLocation.longitude
                         )
-                        android.util.Log.d("WikiWatch", "NearbyMapScreen: Distance from last geosearch: $distance meters")
                         if (distance > 200f) {
                             android.util.Log.d("WikiWatch", "NearbyMapScreen: User moved more than 200m, triggering geosearch")
                             triggerGeosearch = true
@@ -818,6 +830,8 @@ fun NearbyMapScreen(
                 Lifecycle.Event.ON_RESUME -> {
                     android.util.Log.d("WikiWatch", "NearbyMapScreen: Lifecycle ON_RESUME")
                     mapView.onResume()
+                    // Ensure attribution is disabled when map resumes (can be re-enabled by system)
+                    mapInstance?.uiSettings?.setAttributionEnabled(false)
                 }
                 Lifecycle.Event.ON_PAUSE -> {
                     android.util.Log.d("WikiWatch", "NearbyMapScreen: Lifecycle ON_PAUSE")
@@ -839,12 +853,406 @@ fun NearbyMapScreen(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             android.util.Log.d("WikiWatch", "NearbyMapScreen: DisposableEffect onDispose - NOT destroying MapView (keeping it alive)")
+            android.util.Log.d("WikiWatch", "NearbyMapScreen: Camera restoration check - previousScreen=${previousScreen?.javaClass?.simpleName}, initialLat=$initialLat, initialLon=$initialLon")
             lifecycleOwner.lifecycle.removeObserver(observer)
             // Don't call onDestroy here - only pause/stop to keep MapView alive across navigation
             // The MapView will be destroyed when the activity is destroyed (ON_DESTROY lifecycle event)
         }
     }
 
+    // Helper function to setup style images (user location pin, placeholder, thumbnails)
+    fun setupStyleImages(
+        style: Style,
+        context: Context,
+        thumbnailBitmaps: Map<String, Bitmap>
+    ): Pair<Bitmap, Bitmap> {
+        // Add user location pin image to style
+        val userLocationPinId = "user_location_pin"
+        val userLocationPin = try {
+            val pin = createBlueLocationPin(context, 40)
+            try {
+                style.addImage(userLocationPinId, pin.toDrawable(context.resources))
+            } catch (e: Exception) {
+                android.util.Log.d("WikiWatch", "User location pin already in style or error: ${e.message}")
+            }
+            pin
+        } catch (e: Exception) {
+            android.util.Log.e("WikiWatch", "Failed to create user location pin: ${e.message}", e)
+            createBlueLocationPin(context, 40) // Fallback
+        }
+        
+        // Add placeholder image to style
+        val placeholderId = "placeholder_marker"
+        val placeholderBitmap = try {
+            val placeholder = createPlaceholderBitmap(context, 80)
+            try {
+                style.addImage(placeholderId, placeholder.toDrawable(context.resources))
+            } catch (e: Exception) {
+                android.util.Log.d("WikiWatch", "Placeholder already in style or error: ${e.message}")
+            }
+            placeholder
+        } catch (e: Exception) {
+            android.util.Log.e("WikiWatch", "Failed to create placeholder: ${e.message}", e)
+            createPlaceholderBitmap(context, 80)
+        }
+        
+        // Add thumbnail images to style
+        thumbnailBitmaps.forEach { (title, bitmap) ->
+            val imageId = "marker_${title.hashCode()}"
+            try {
+                style.addImage(imageId, bitmap.toDrawable(context.resources))
+            } catch (e: Exception) {
+                android.util.Log.d("WikiWatch", "Image for $title already in style or error: ${e.message}")
+            }
+        }
+        
+        return Pair(userLocationPin, placeholderBitmap)
+    }
+    
+    // Helper function to clear existing markers
+    fun clearExistingMarkers(
+        initializedMap: MapLibreMap,
+        allMarkers: MutableList<Marker>,
+        markerToTitleMap: MutableMap<Marker, String>
+    ) {
+        android.util.Log.d("WikiWatch", "NearbyMapScreen: Clearing ${allMarkers.size} previous markers")
+        try {
+            val markersToRemove = allMarkers.toList()
+            markersToRemove.forEach { marker ->
+                try {
+                    if (marker != null) {
+                        initializedMap.removeMarker(marker)
+                        mapInstance?.uiSettings?.setAttributionEnabled(false)
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.w("WikiWatch", "NearbyMapScreen: Error removing marker: ${e.message}")
+                }
+            }
+            allMarkers.clear()
+            markerToTitleMap.clear()
+        } catch (e: Exception) {
+            android.util.Log.e("WikiWatch", "NearbyMapScreen: Error clearing markers: ${e.message}", e)
+            allMarkers.clear()
+            markerToTitleMap.clear()
+        }
+    }
+    
+    // Helper function to add user location marker
+    fun addUserLocationMarker(
+        initializedMap: MapLibreMap,
+        context: Context,
+        userLocation: LatLng?,
+        initialLat: Double?,
+        initialLon: Double?,
+        userLocationPin: Bitmap,
+        allMarkers: MutableList<Marker>,
+        markerToTitleMap: MutableMap<Marker, String>
+    ) {
+        if (initialLat == null && initialLon == null && userLocation != null) {
+            android.util.Log.d("WikiWatch", "NearbyMapScreen: Adding user location pin")
+            val userLocationIcon = IconFactory.getInstance(context).fromBitmap(userLocationPin)
+            val userLocationMarker = initializedMap.addMarker(
+                MarkerOptions()
+                    .position(userLocation)
+                    .icon(userLocationIcon)
+                    .title("Your Location")
+            )
+            allMarkers.add(userLocationMarker)
+            markerToTitleMap[userLocationMarker] = "Your Location"
+        }
+    }
+    
+    // Helper function to add article markers
+    fun addArticleMarkers(
+        initializedMap: MapLibreMap,
+        context: Context,
+        nearbyArticles: List<GeoSearchResult>,
+        thumbnailBitmaps: Map<String, Bitmap>,
+        placeholderBitmap: Bitmap,
+        visitedArticles: Set<String>,
+        allMarkers: MutableList<Marker>,
+        markerToTitleMap: MutableMap<Marker, String>
+    ): List<LatLng> {
+        val markerPositions = mutableListOf<LatLng>()
+        
+        android.util.Log.d("WikiWatch", "NearbyMapScreen: Adding ${nearbyArticles.size} article markers")
+        android.util.Log.d("WikiWatch", "NearbyMapScreen: Available thumbnails: ${thumbnailBitmaps.keys.joinToString(", ")}")
+        android.util.Log.d("WikiWatch", "NearbyMapScreen: Thumbnail count: ${thumbnailBitmaps.size}, Placeholder bitmap: ${placeholderBitmap != null} (${placeholderBitmap.width}x${placeholderBitmap.height})")
+        
+        nearbyArticles.forEach { article ->
+            val position = LatLng(article.lat, article.lon)
+            markerPositions.add(position)
+            
+            val markerOptions = MarkerOptions()
+                .position(position)
+                .title(article.title)
+            
+            val hasThumbnail = thumbnailBitmaps.containsKey(article.title)
+            val thumbnailBitmap = thumbnailBitmaps[article.title]
+            var bitmap = thumbnailBitmap ?: placeholderBitmap
+            
+            
+            if (!hasThumbnail) {
+            } else {
+            }
+            
+            // Add green checkmark if article has been visited
+            if (visitedArticles.contains(article.title)) {
+                bitmap = addCheckmarkToBitmap(bitmap, 80)
+            }
+            
+            try {
+                if (bitmap == null) {
+                    return@forEach
+                }
+                if (bitmap.isRecycled) {
+                    return@forEach
+                }
+                val icon = IconFactory.getInstance(context).fromBitmap(bitmap)
+                if (icon == null) {
+                    return@forEach
+                }
+                markerOptions.icon(icon)
+                
+                val marker = initializedMap.addMarker(markerOptions)
+                if (marker == null) {
+                    return@forEach
+                }
+                markerToTitleMap[marker] = article.title
+                allMarkers.add(marker)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        
+        android.util.Log.d("WikiWatch", "NearbyMapScreen: Added ${allMarkers.size} total markers")
+        return markerPositions
+    }
+    
+    // Helper function to calculate bounds from marker positions
+    fun calculateBounds(markerPositions: List<LatLng>): LatLngBounds {
+        val boundsBuilder = LatLngBounds.Builder()
+        markerPositions.forEach { position ->
+            boundsBuilder.include(position)
+        }
+        return boundsBuilder.build()
+    }
+    
+    // Helper function to calculate center from marker positions
+    fun calculateCenter(markerPositions: List<LatLng>): Pair<Double, Double> {
+        var minLat = markerPositions[0].latitude
+        var maxLat = markerPositions[0].latitude
+        var minLon = markerPositions[0].longitude
+        var maxLon = markerPositions[0].longitude
+        
+        markerPositions.forEach { position ->
+            minLat = minOf(minLat, position.latitude)
+            maxLat = maxOf(maxLat, position.latitude)
+            minLon = minOf(minLon, position.longitude)
+            maxLon = maxOf(maxLon, position.longitude)
+        }
+        
+        return Pair((minLat + maxLat) / 2, (minLon + maxLon) / 2)
+    }
+    
+    // Helper function to calculate estimated zoom based on marker positions
+    fun calculateEstimatedZoom(markerPositions: List<LatLng>): Double {
+        if (markerPositions.isEmpty()) return 15.0
+        if (markerPositions.size == 1) return 15.0
+        
+        var minLat = markerPositions[0].latitude
+        var maxLat = markerPositions[0].latitude
+        var minLon = markerPositions[0].longitude
+        var maxLon = markerPositions[0].longitude
+        
+        markerPositions.forEach { position ->
+            minLat = minOf(minLat, position.latitude)
+            maxLat = maxOf(maxLat, position.latitude)
+            minLon = minOf(minLon, position.longitude)
+            maxLon = maxOf(maxLon, position.longitude)
+        }
+        
+        val latDiff = maxLat - minLat
+        val lonDiff = maxLon - minLon
+        val maxDiff = maxOf(latDiff, lonDiff)
+        return when {
+            maxDiff > 0.1 -> 10.0
+            maxDiff > 0.05 -> 12.0
+            maxDiff > 0.01 -> 14.0
+            else -> 16.0
+        }
+    }
+    
+    // Helper function to setup camera position
+    fun setupCameraPosition(
+        initializedMap: MapLibreMap,
+        context: Context,
+        markerPositions: List<LatLng>,
+        loc: LatLng,
+        previousScreen: Screen?,
+        nearbyArticles: List<GeoSearchResult>,
+        initialGeosearchDone: Boolean,
+        markersInitiallyAdded: Boolean,
+        initialLat: Double?,
+        initialLon: Double?,
+        initialCameraSetup: Boolean,
+        savedCameraPosition: org.maplibre.android.camera.CameraPosition?,
+        setIsRestoringCamera: (Boolean) -> Unit,
+        setInitialCameraSetup: (Boolean) -> Unit,
+        setSavedCameraPosition: (org.maplibre.android.camera.CameraPosition?) -> Unit,
+        viewModel: NearbyMapViewModel // Add ViewModel to access state directly
+    ): Boolean {
+        // Returns true if camera was restored (should return early), false otherwise
+        android.util.Log.d("WikiWatch", "NearbyMapScreen: Camera setup - initialCameraSetup=$initialCameraSetup, markerCount=${markerPositions.size}, savedPosition=${savedCameraPosition != null}, initialLat=$initialLat, initialLon=$initialLon")
+        
+        // FIRST: If returning via back button, restore saved position and skip all other setup
+        android.util.Log.d("WikiWatch", "NearbyMapScreen: Camera restoration check - previousScreen=${previousScreen?.javaClass?.simpleName}, initialLat=$initialLat, initialLon=$initialLon")
+        
+        // Check each condition separately for better debugging
+        // Use ViewModel state directly to avoid timing issues with local variable sync
+        // Detect returning from article by checking:
+        // 1. previousScreen is Screen.Search (we restored it when returning from article)
+        //    - When opening from main screen first time, previousScreen is null
+        //    - When returning from article, previousScreen is Search (restored)
+        // 2. initialLat/initialLon are null (we set them to null when returning)
+        // 3. ViewModel has state (articles, camera setup, etc.) indicating we've been here before
+        val hasArticles = viewModel.nearbyArticles.isNotEmpty() // Use ViewModel directly
+        val geosearchDone = viewModel.initialGeosearchDone // Use ViewModel directly
+        val cameraSetup = viewModel.initialCameraSetup // Use ViewModel directly
+        val markersAdded = viewModel.markersInitiallyAdded // Use ViewModel directly
+        // Detect returning from article using navigation stack (much more reliable!)
+        // Check if the last screen in the navigation stack was "Article"
+        val isReturningFromArticle = viewModel.isReturningFromArticle() &&
+                                    initialLat == null && 
+                                    initialLon == null &&
+                                    hasArticles && 
+                                    geosearchDone && 
+                                    cameraSetup &&
+                                    markersAdded
+        
+        android.util.Log.d("WikiWatch", "NearbyMapScreen: Condition breakdown - isReturningFromArticle=${viewModel.isReturningFromArticle()}, initialLat=$initialLat, initialLon=$initialLon, hasArticles=$hasArticles (${viewModel.nearbyArticles.size}), geosearchDone=$geosearchDone, cameraSetup=$cameraSetup, markersAdded=$markersAdded")
+        android.util.Log.d("WikiWatch", "NearbyMapScreen: Local state - articles=${nearbyArticles.size}, geosearchDone=$initialGeosearchDone, cameraSetup=$initialCameraSetup, markersAdded=$markersInitiallyAdded")
+        android.util.Log.d("WikiWatch", "NearbyMapScreen: ViewModel state - articles=${viewModel.nearbyArticles.size}, geosearchDone=${viewModel.initialGeosearchDone}, cameraSetup=${viewModel.initialCameraSetup}, markersAdded=${viewModel.markersInitiallyAdded}")
+        
+        android.util.Log.d("WikiWatch", "NearbyMapScreen: Final result - isReturningFromArticle=$isReturningFromArticle")
+        
+        if (isReturningFromArticle) {
+            android.util.Log.d("WikiWatch", "NearbyMapScreen: isReturningFromArticle is TRUE - attempting to restore camera")
+            val positionToRestore = savedCameraPosition ?: loadSavedCameraPosition(context)
+            android.util.Log.d("WikiWatch", "NearbyMapScreen: positionToRestore=${positionToRestore != null}, savedCameraPosition=${savedCameraPosition != null}, loadedFromPrefs=${positionToRestore != null && savedCameraPosition == null}")
+            if (positionToRestore != null) {
+                android.util.Log.d("WikiWatch", "NearbyMapScreen: Restoring saved camera position (returning from article) - target=${positionToRestore.target}, zoom=${positionToRestore.zoom}, markerCount=${markerPositions.size}")
+                setSavedCameraPosition(positionToRestore)
+                setIsRestoringCamera(true)
+                initializedMap.cameraPosition = positionToRestore
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                    setIsRestoringCamera(false)
+                    android.util.Log.d("WikiWatch", "NearbyMapScreen: Camera restoration complete, re-enabling position saving")
+                }, 500)
+                return true // Indicate that camera was restored, should return early
+            } else {
+                android.util.Log.d("WikiWatch", "NearbyMapScreen: No saved camera position to restore, will continue with other setup")
+            }
+        } else {
+            android.util.Log.d("WikiWatch", "NearbyMapScreen: Not returning (isReturningFromArticle=$isReturningFromArticle), will proceed with normal camera setup")
+        }
+        
+        // SECOND: If opening from article location via coordinates icon, focus on that location but keep zoom level
+        if (initialLat != null && initialLon != null && !initialCameraSetup && markerPositions.isNotEmpty()) {
+            android.util.Log.d("WikiWatch", "NearbyMapScreen: Opening from article location via coordinates icon")
+            setInitialCameraSetup(true)
+            viewModel.setInitialCameraSetup(true) // Also update ViewModel so it persists
+            
+            // Get the saved camera position to preserve zoom level
+            val savedPosition = savedCameraPosition ?: loadSavedCameraPosition(context)
+            val zoomLevel = savedPosition?.zoom ?: 15.0 // Use saved zoom, or default to 15.0
+            
+            android.util.Log.d("WikiWatch", "NearbyMapScreen: Focusing on article coordinates (lat=$initialLat, lon=$initialLon) with preserved zoom level: $zoomLevel")
+            
+            // Find the marker for the article at these coordinates (or use the coordinates directly)
+            val targetMarker = markerPositions.find { 
+                Math.abs(it.latitude - initialLat!!) < 0.0001 && 
+                Math.abs(it.longitude - initialLon!!) < 0.0001 
+            } ?: markerPositions.firstOrNull() ?: LatLng(initialLat!!, initialLon!!)
+            
+            val cameraPosition = org.maplibre.android.camera.CameraPosition.Builder()
+                .target(targetMarker)
+                .zoom(zoomLevel) // Use preserved zoom level
+                .build()
+            
+            initializedMap.cameraPosition = cameraPosition
+            setSavedCameraPosition(cameraPosition)
+            saveCameraPosition(context, cameraPosition)
+            
+            // Reset the flag after using it
+            viewModel.setOpeningFromArticleCoordinates(false)
+            
+            return false
+        }
+        
+        // THIRD: Otherwise, do initial zoom to article markers (first time opening, only if we have markers)
+        if (!initialCameraSetup && markerPositions.isNotEmpty()) {
+            android.util.Log.d("WikiWatch", "NearbyMapScreen: Setting up camera with ${markerPositions.size} marker positions (${nearbyArticles.size} articles)")
+            setInitialCameraSetup(true)
+            viewModel.setInitialCameraSetup(true) // Also update ViewModel so it persists
+            
+            val bounds = calculateBounds(markerPositions)
+            val (centerLat, centerLon) = calculateCenter(markerPositions)
+            android.util.Log.d("WikiWatch", "NearbyMapScreen: Calculated bounds - centerLat=$centerLat, centerLon=$centerLon, markerCount=${markerPositions.size}")
+            
+            if (markerPositions.size == 1) {
+                android.util.Log.d("WikiWatch", "NearbyMapScreen: Only one marker position, using fixed zoom")
+                val cameraPosition = org.maplibre.android.camera.CameraPosition.Builder()
+                    .target(markerPositions[0])
+                    .zoom(15.0)
+                    .build()
+                initializedMap.cameraPosition = cameraPosition
+                setSavedCameraPosition(cameraPosition)
+                saveCameraPosition(context, cameraPosition)
+            } else {
+                android.util.Log.d("WikiWatch", "NearbyMapScreen: Fitting camera to bounds for ${markerPositions.size} marker positions")
+                try {
+                    android.util.Log.d("WikiWatch", "NearbyMapScreen: Calling easeCamera with bounds")
+                    initializedMap.easeCamera(
+                        CameraUpdateFactory.newLatLngBounds(bounds, 100),
+                        1000
+                    )
+                    android.util.Log.d("WikiWatch", "NearbyMapScreen: Camera animation started to fit bounds")
+                    val (centerLat, centerLon) = calculateCenter(markerPositions)
+                    val estimatedZoom = calculateEstimatedZoom(markerPositions)
+                    android.util.Log.d("WikiWatch", "NearbyMapScreen: Estimated zoom: $estimatedZoom")
+                    val cameraPosition = org.maplibre.android.camera.CameraPosition.Builder()
+                        .target(LatLng(centerLat, centerLon))
+                        .zoom(estimatedZoom)
+                        .build()
+                    setSavedCameraPosition(cameraPosition)
+                    saveCameraPosition(context, cameraPosition)
+                } catch (e: Exception) {
+                    android.util.Log.e("WikiWatch", "NearbyMapScreen: Failed to fit bounds: ${e.message}, using fallback", e)
+                    e.printStackTrace()
+                    val (centerLat, centerLon) = calculateCenter(markerPositions)
+                    val estimatedZoom = calculateEstimatedZoom(markerPositions)
+                    android.util.Log.d("WikiWatch", "NearbyMapScreen: Using fallback zoom: $estimatedZoom")
+                    val cameraPosition = org.maplibre.android.camera.CameraPosition.Builder()
+                        .target(LatLng(centerLat, centerLon))
+                        .zoom(estimatedZoom)
+                        .build()
+                    initializedMap.cameraPosition = cameraPosition
+                    setSavedCameraPosition(cameraPosition)
+                    saveCameraPosition(context, cameraPosition)
+                }
+            }
+            return false
+        } else if (!initialCameraSetup && markerPositions.isEmpty()) {
+            android.util.Log.d("WikiWatch", "NearbyMapScreen: No markers yet, waiting for search results before setting camera")
+        } else {
+            android.util.Log.d("WikiWatch", "NearbyMapScreen: Skipping camera setup - initialCameraSetup=$initialCameraSetup")
+        }
+        
+        return false
+    }
+    
+    
     // Helper function to add markers to map (extracted to avoid code duplication)
     // Note: initialCameraSetup is accessed directly from composable scope
     // This function should only be called when the map is in a stable state
@@ -871,372 +1279,39 @@ fun NearbyMapScreen(
                 android.util.Log.w("WikiWatch", "NearbyMapScreen: Map style mismatch or null, aborting marker update - currentStyle=${currentStyle != null}, styleMatch=${currentStyle == style}")
                 return
             }
-            // Style is loaded from assets, configured with Kartotherian tiles
-            // Based on Wikipedia app's approach: add images to style first, then use them
             
-            // Add user location pin image to style (only if not already added)
-            val userLocationPinId = "user_location_pin"
-            val userLocationPin = try {
-                val pin = createBlueLocationPin(context, 40)
-                try {
-                    style.addImage(userLocationPinId, pin.toDrawable(context.resources))
-                } catch (e: Exception) {
-                    // Image may already exist, that's okay
-                    android.util.Log.d("WikiWatch", "User location pin already in style or error: ${e.message}")
-                }
-                pin
-            } catch (e: Exception) {
-                android.util.Log.e("WikiWatch", "Failed to create user location pin: ${e.message}", e)
-                createBlueLocationPin(context, 40) // Fallback
+            // Setup style images (user location pin, placeholder, thumbnails)
+            val (userLocationPin, placeholderBitmap) = setupStyleImages(style, context, thumbnailBitmaps)
+            
+            // Clear existing markers
+            clearExistingMarkers(initializedMap, allMarkers, markerToTitleMap)
+            
+            // Add user location marker
+            addUserLocationMarker(
+                initializedMap, context, userLocation, initialLat, initialLon,
+                userLocationPin, allMarkers, markerToTitleMap
+            )
+            
+            // Add article markers and get their positions
+            val markerPositions = addArticleMarkers(
+                initializedMap, context, nearbyArticles, thumbnailBitmaps,
+                placeholderBitmap, visitedArticles, allMarkers, markerToTitleMap
+            )
+            
+            // Setup camera position - returns true if camera was restored (should return early)
+            val cameraRestored = setupCameraPosition(
+                initializedMap, context, markerPositions, loc, previousScreen,
+                nearbyArticles, initialGeosearchDone, markersInitiallyAdded,
+                initialLat, initialLon, initialCameraSetup, savedCameraPosition,
+                { isRestoringCamera = it }, { initialCameraSetup = it }, { savedCameraPosition = it },
+                viewModel // Pass ViewModel to access state directly
+            )
+            
+            if (cameraRestored) {
+                // Camera was restored, return early to prevent any other camera setup
+                return@addMarkersToMap
             }
             
-            // Add placeholder image to style (only if not already added)
-            val placeholderId = "placeholder_marker"
-            val placeholderBitmap = try {
-                val placeholder = createPlaceholderBitmap(context, 80)
-                try {
-                    style.addImage(placeholderId, placeholder.toDrawable(context.resources))
-                } catch (e: Exception) {
-                    // Image may already exist, create it anyway for use
-                    android.util.Log.d("WikiWatch", "Placeholder already in style or error: ${e.message}")
-                }
-                placeholder
-            } catch (e: Exception) {
-                android.util.Log.e("WikiWatch", "Failed to create placeholder: ${e.message}", e)
-                createPlaceholderBitmap(context, 80)
-            }
-            
-            // Add thumbnail images to style (using URL or title as unique ID)
-            // Only add if not already in style to avoid crashes
-            thumbnailBitmaps.forEach { (title, bitmap) ->
-                val imageId = "marker_${title.hashCode()}"
-                try {
-                    style.addImage(imageId, bitmap.toDrawable(context.resources))
-                } catch (e: Exception) {
-                    // Skip if image already exists or other error
-                    android.util.Log.d("WikiWatch", "Image for $title already in style or error: ${e.message}")
-                }
-            }
-            
-            // Clear previous markers - ensure we're on UI thread and handle errors
-            android.util.Log.d("WikiWatch", "NearbyMapScreen: Clearing ${allMarkers.size} previous markers")
-            try {
-                // Create a copy of markers to avoid concurrent modification
-                val markersToRemove = allMarkers.toList()
-                markersToRemove.forEach { marker ->
-                    try {
-                        if (marker != null) {
-                            initializedMap.removeMarker(marker)
-                        }
-                    } catch (e: Exception) {
-                        android.util.Log.w("WikiWatch", "NearbyMapScreen: Error removing marker: ${e.message}")
-                    }
-                }
-                allMarkers.clear()
-                markerToTitleMap.clear()
-            } catch (e: Exception) {
-                android.util.Log.e("WikiWatch", "NearbyMapScreen: Error clearing markers: ${e.message}", e)
-                // Clear lists even if removal fails
-                allMarkers.clear()
-                markerToTitleMap.clear()
-            }
-            
-            // Add markers for nearby articles with thumbnails
-            // Note: Don't include user location in markerPositions - only count article markers
-            val markerPositions = mutableListOf<LatLng>()
-            
-            // Only show user location pin if we're using actual user location (not initial coordinates)
-            if (initialLat == null && initialLon == null && userLocation != null) {
-                android.util.Log.d("WikiWatch", "NearbyMapScreen: Adding user location pin")
-                // Add blue pin for user's current location - use userLocation, not loc
-                val userLocationIcon = IconFactory.getInstance(context).fromBitmap(userLocationPin)
-                val userLocationMarker = initializedMap.addMarker(
-                    MarkerOptions()
-                        .position(userLocation) // Use actual userLocation, not searchLocation
-                        .icon(userLocationIcon)
-                        .title("Your Location")
-                )
-                allMarkers.add(userLocationMarker)
-                markerToTitleMap[userLocationMarker] = "Your Location"
-                // Don't add user location to markerPositions - only count article markers
-            } else {
-                android.util.Log.d("WikiWatch", "NearbyMapScreen: Using initial coordinates, not adding user location pin")
-                // Don't add initial coordinates to markerPositions either - only count article markers
-            }
-            
-            android.util.Log.d("WikiWatch", "NearbyMapScreen: Adding ${nearbyArticles.size} article markers")
-            android.util.Log.d("WikiWatch", "NearbyMapScreen: Available thumbnails: ${thumbnailBitmaps.keys.joinToString(", ")}")
-            android.util.Log.d("WikiWatch", "NearbyMapScreen: Thumbnail count: ${thumbnailBitmaps.size}, Placeholder bitmap: ${placeholderBitmap != null} (${placeholderBitmap.width}x${placeholderBitmap.height})")
-            nearbyArticles.forEach { article ->
-                val position = LatLng(article.lat, article.lon)
-                markerPositions.add(position)
-                
-                val markerOptions = MarkerOptions()
-                    .position(position)
-                    .title(article.title)
-                
-                // Use thumbnail bitmap if available, otherwise use placeholder
-                val hasThumbnail = thumbnailBitmaps.containsKey(article.title)
-                val thumbnailBitmap = thumbnailBitmaps[article.title]
-                var bitmap = thumbnailBitmap ?: placeholderBitmap
-                
-                android.util.Log.d("WikiWatch", "NearbyMapScreen: Creating marker for ${article.title} - hasThumbnail=$hasThumbnail, bitmap=${bitmap != null} (${bitmap?.width}x${bitmap?.height}), thumbnailUrl=${article.thumbnailUrl}")
-                
-                if (!hasThumbnail) {
-                    android.util.Log.d("WikiWatch", "NearbyMapScreen: No thumbnail for ${article.title}, using placeholder. thumbnailUrl=${article.thumbnailUrl}")
-                } else {
-                    android.util.Log.d("WikiWatch", "NearbyMapScreen: Using thumbnail for ${article.title} - bitmap size: ${bitmap.width}x${bitmap.height}")
-                }
-                
-                // Add green checkmark if article has been visited
-                if (visitedArticles.contains(article.title)) {
-                    android.util.Log.d("WikiWatch", "NearbyMapScreen: Adding checkmark to ${article.title}")
-                    bitmap = addCheckmarkToBitmap(bitmap, 80)
-                    android.util.Log.d("WikiWatch", "NearbyMapScreen: Checkmark added, new bitmap size: ${bitmap.width}x${bitmap.height}")
-                }
-                
-                try {
-                    if (bitmap == null) {
-                        android.util.Log.e("WikiWatch", "NearbyMapScreen: Bitmap is null for ${article.title}, cannot create marker!")
-                        return@forEach
-                    }
-                    if (bitmap.isRecycled) {
-                        android.util.Log.e("WikiWatch", "NearbyMapScreen: Bitmap is recycled for ${article.title}, cannot use!")
-                        return@forEach
-                    }
-                    android.util.Log.d("WikiWatch", "NearbyMapScreen: Creating icon from bitmap for ${article.title} - bitmap valid: ${!bitmap.isRecycled}, size: ${bitmap.width}x${bitmap.height}")
-                    val icon = IconFactory.getInstance(context).fromBitmap(bitmap)
-                    if (icon == null) {
-                        android.util.Log.e("WikiWatch", "NearbyMapScreen: IconFactory returned null for ${article.title}!")
-                        return@forEach
-                    }
-                    markerOptions.icon(icon)
-                    
-                    android.util.Log.d("WikiWatch", "NearbyMapScreen: Adding marker to map for ${article.title}")
-                    val marker = initializedMap.addMarker(markerOptions)
-                    if (marker == null) {
-                        android.util.Log.e("WikiWatch", "NearbyMapScreen: addMarker returned null for ${article.title}!")
-                        return@forEach
-                    }
-                    markerToTitleMap[marker] = article.title
-                    allMarkers.add(marker)
-                    android.util.Log.d("WikiWatch", "NearbyMapScreen: Successfully added marker for ${article.title}")
-                } catch (e: Exception) {
-                    android.util.Log.e("WikiWatch", "NearbyMapScreen: Error creating marker for ${article.title}: ${e.message}", e)
-                    e.printStackTrace()
-                }
-            }
-            android.util.Log.d("WikiWatch", "NearbyMapScreen: Added ${allMarkers.size} total markers")
-            
-            // Camera setup logic:
-            // 1. If returning via back button (savedCameraPosition exists), restore saved position FIRST
-            // 2. If opening from article (initialLat/initialLon), always zoom to article location
-            // 3. Otherwise, do initial zoom to user location
-            android.util.Log.d("WikiWatch", "NearbyMapScreen: Camera setup - initialCameraSetup=$initialCameraSetup, markerCount=${markerPositions.size}, savedPosition=${savedCameraPosition != null}, initialLat=$initialLat, initialLon=$initialLon")
-            
-            // FIRST: If returning via back button, restore saved position and skip all other setup
-            // Only restore if:
-            // 1. We're returning from an Article screen (previousScreen is Screen.Article)
-            // 2. We have articles already loaded (from ViewModel, indicating we're returning)
-            // 3. Initial geosearch was already done (we're not doing a fresh search)
-            // 4. Initial camera setup was done (camera was set up before)
-            // 5. Markers were already added (we're not setting up for the first time)
-            // 6. We're not opening to a specific article location (initialLat/initialLon are null)
-            val isReturningFromArticle = previousScreen is Screen.Article && 
-                                        nearbyArticles.isNotEmpty() && 
-                                        initialGeosearchDone && 
-                                        initialCameraSetup &&
-                                        initialLat == null &&
-                                        initialLon == null
-                                        markersInitiallyAdded
-            android.util.Log.d("WikiWatch", "NearbyMapScreen: Checking if returning - previousScreen=${previousScreen?.javaClass?.simpleName}, isArticle=${previousScreen is Screen.Article}, articles=${nearbyArticles.size}, geosearchDone=$initialGeosearchDone, cameraSetup=$initialCameraSetup, markersAdded=$markersInitiallyAdded, initialLat=$initialLat, initialLon=$initialLon")
-            if (isReturningFromArticle && markerPositions.isNotEmpty()) {
-                val positionToRestore = savedCameraPosition ?: loadSavedCameraPosition(context)
-                if (positionToRestore != null) {
-                    android.util.Log.d("WikiWatch", "NearbyMapScreen: Restoring saved camera position (returning from article) - target=${positionToRestore.target}, zoom=${positionToRestore.zoom}")
-                    savedCameraPosition = positionToRestore // Update in-memory value
-                    isRestoringCamera = true // Prevent camera idle listener from overwriting
-                    initializedMap.cameraPosition = positionToRestore
-                    // Reset flag after a short delay to allow restoration to complete
-                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                        isRestoringCamera = false
-                        android.util.Log.d("WikiWatch", "NearbyMapScreen: Camera restoration complete, re-enabling position saving")
-                    }, 500)
-                    // CRITICAL: Return early to prevent any other camera setup from running
-                    return@addMarkersToMap
-                } else {
-                    android.util.Log.d("WikiWatch", "NearbyMapScreen: No saved camera position to restore, will continue with other setup")
-                }
-            } else {
-                android.util.Log.d("WikiWatch", "NearbyMapScreen: Not returning (isReturningFromArticle=$isReturningFromArticle), will proceed with normal camera setup")
-            }
-            
-            // SECOND: If opening from article location, always zoom to that location (ignore saved position)
-            if (initialLat != null && initialLon != null && !initialCameraSetup && markerPositions.isNotEmpty()) {
-                android.util.Log.d("WikiWatch", "NearbyMapScreen: Opening from article location, zooming to article")
-                initialCameraSetup = true
-                // Calculate bounds from all markers
-                var minLat = markerPositions[0].latitude
-                var maxLat = markerPositions[0].latitude
-                var minLon = markerPositions[0].longitude
-                var maxLon = markerPositions[0].longitude
-
-                markerPositions.forEach { position ->
-                    minLat = minOf(minLat, position.latitude)
-                    maxLat = maxOf(maxLat, position.latitude)
-                    minLon = minOf(minLon, position.longitude)
-                    maxLon = maxOf(maxLon, position.longitude)
-                }
-
-                val bounds = LatLngBounds.Builder()
-                    .include(LatLng(minLat, minLon))
-                    .include(LatLng(maxLat, maxLon))
-                    .build()
-
-                if (markerPositions.size == 1) {
-                    val cameraPosition = org.maplibre.android.camera.CameraPosition.Builder()
-                        .target(markerPositions[0])
-                        .zoom(15.0)
-                        .build()
-                    initializedMap.cameraPosition = cameraPosition
-                    savedCameraPosition = cameraPosition
-                } else {
-                    try {
-                        initializedMap.easeCamera(
-                            CameraUpdateFactory.newLatLngBounds(bounds, 100),
-                            1000
-                        )
-                        val centerLat = (minLat + maxLat) / 2
-                        val centerLon = (minLon + maxLon) / 2
-                        val latDiff = maxLat - minLat
-                        val lonDiff = maxLon - minLon
-                        val maxDiff = maxOf(latDiff, lonDiff)
-                        val estimatedZoom = when {
-                            maxDiff > 0.1 -> 10.0
-                            maxDiff > 0.05 -> 12.0
-                            maxDiff > 0.01 -> 14.0
-                            else -> 16.0
-                        }
-                        val cameraPosition = org.maplibre.android.camera.CameraPosition.Builder()
-                            .target(LatLng(centerLat, centerLon))
-                            .zoom(estimatedZoom)
-                            .build()
-                        savedCameraPosition = cameraPosition
-                    } catch (e: Exception) {
-                        val cameraPosition = org.maplibre.android.camera.CameraPosition.Builder()
-                            .target(LatLng(loc.latitude, loc.longitude))
-                            .zoom(15.0)
-                            .build()
-                        initializedMap.cameraPosition = cameraPosition
-                        savedCameraPosition = cameraPosition
-                    }
-                }
-            }
-            // Otherwise, do initial zoom to article markers (first time opening, only if we have markers)
-            else if (!initialCameraSetup && markerPositions.isNotEmpty()) {
-                android.util.Log.d("WikiWatch", "NearbyMapScreen: Setting up camera with ${markerPositions.size} marker positions (${nearbyArticles.size} articles)")
-                // Access the mutable state directly from composable scope
-                @Suppress("UNUSED_VARIABLE")
-                val currentValue = initialCameraSetup
-                android.util.Log.d("WikiWatch", "NearbyMapScreen: Before setting initialCameraSetup, current value: $currentValue")
-                initialCameraSetup = true
-                android.util.Log.d("WikiWatch", "NearbyMapScreen: After setting initialCameraSetup to true")
-                
-                // Calculate bounds from all markers
-                var minLat = markerPositions[0].latitude
-                var maxLat = markerPositions[0].latitude
-                var minLon = markerPositions[0].longitude
-                var maxLon = markerPositions[0].longitude
-                
-                markerPositions.forEach { position ->
-                    minLat = minOf(minLat, position.latitude)
-                    maxLat = maxOf(maxLat, position.latitude)
-                    minLon = minOf(minLon, position.longitude)
-                    maxLon = maxOf(maxLon, position.longitude)
-                }
-                
-                android.util.Log.d("WikiWatch", "NearbyMapScreen: Calculated bounds - minLat=$minLat, maxLat=$maxLat, minLon=$minLon, maxLon=$maxLon")
-                android.util.Log.d("WikiWatch", "NearbyMapScreen: Lat diff=${maxLat - minLat}, Lon diff=${maxLon - minLon}")
-                
-                // Create bounds with padding - need at least 2 points for bounds
-                if (markerPositions.size == 1) {
-                    android.util.Log.d("WikiWatch", "NearbyMapScreen: Only one marker position, using fixed zoom")
-                    val cameraPosition = org.maplibre.android.camera.CameraPosition.Builder()
-                        .target(markerPositions[0])
-                        .zoom(15.0)
-                        .build()
-                    initializedMap.cameraPosition = cameraPosition
-                    savedCameraPosition = cameraPosition // Save the position
-                    saveCameraPosition(context, cameraPosition) // Persist to SharedPreferences
-                } else {
-                    // Use easeCamera to fit bounds and show all markers
-                    android.util.Log.d("WikiWatch", "NearbyMapScreen: Fitting camera to bounds for ${markerPositions.size} marker positions")
-                    val boundsBuilder = LatLngBounds.Builder()
-                    markerPositions.forEach { position ->
-                        boundsBuilder.include(position)
-                    }
-                    val bounds = boundsBuilder.build()
-                    
-                    try {
-                        android.util.Log.d("WikiWatch", "NearbyMapScreen: Calling easeCamera with bounds")
-                        initializedMap.easeCamera(
-                            CameraUpdateFactory.newLatLngBounds(bounds, 100), // 100dp padding
-                            1000 // 1 second animation
-                        )
-                        android.util.Log.d("WikiWatch", "NearbyMapScreen: Camera animation started to fit bounds")
-                        // Calculate estimated zoom based on bounds for consistency
-                        val centerLat = (minLat + maxLat) / 2
-                        val centerLon = (minLon + maxLon) / 2
-                        val latDiff = maxLat - minLat
-                        val lonDiff = maxLon - minLon
-                        val maxDiff = maxOf(latDiff, lonDiff)
-                        val estimatedZoom = when {
-                            maxDiff > 0.1 -> 10.0
-                            maxDiff > 0.05 -> 12.0
-                            maxDiff > 0.01 -> 14.0
-                            else -> 16.0
-                        }
-                        android.util.Log.d("WikiWatch", "NearbyMapScreen: Estimated zoom: $estimatedZoom (maxDiff=$maxDiff)")
-                        // Save estimated position for consistency (easeCamera will use its own zoom, but we save estimated for reference)
-                        val cameraPosition = org.maplibre.android.camera.CameraPosition.Builder()
-                            .target(LatLng(centerLat, centerLon))
-                            .zoom(estimatedZoom)
-                            .build()
-                        savedCameraPosition = cameraPosition
-                        saveCameraPosition(context, cameraPosition) // Persist to SharedPreferences
-                    } catch (e: Exception) {
-                        // Fallback to simple camera position if bounds calculation fails
-                        android.util.Log.e("WikiWatch", "NearbyMapScreen: Failed to fit bounds: ${e.message}, using fallback", e)
-                        e.printStackTrace()
-                        val centerLat = (minLat + maxLat) / 2
-                        val centerLon = (minLon + maxLon) / 2
-                        val latDiff = maxLat - minLat
-                        val lonDiff = maxLon - minLon
-                        val maxDiff = maxOf(latDiff, lonDiff)
-                        val estimatedZoom = when {
-                            maxDiff > 0.1 -> 10.0
-                            maxDiff > 0.05 -> 12.0
-                            maxDiff > 0.01 -> 14.0
-                            else -> 16.0
-                        }
-                        android.util.Log.d("WikiWatch", "NearbyMapScreen: Using fallback zoom: $estimatedZoom")
-                        val cameraPosition = org.maplibre.android.camera.CameraPosition.Builder()
-                            .target(LatLng(centerLat, centerLon))
-                            .zoom(estimatedZoom)
-                            .build()
-                        initializedMap.cameraPosition = cameraPosition
-                        savedCameraPosition = cameraPosition // Save the position
-                        saveCameraPosition(context, cameraPosition) // Persist to SharedPreferences
-                    }
-                }
-            } else if (!initialCameraSetup && markerPositions.isEmpty()) {
-                // No markers - don't zoom, just wait for search results
-                android.util.Log.d("WikiWatch", "NearbyMapScreen: No markers yet, waiting for search results before setting camera")
-                // Don't set initialCameraSetup to true yet - wait until we have markers
-                // This prevents zooming to user location when we don't have results
-            } else {
-                android.util.Log.d("WikiWatch", "NearbyMapScreen: Skipping camera setup - initialCameraSetup=$initialCameraSetup")
-            }
             android.util.Log.d("WikiWatch", "NearbyMapScreen: Marker and camera setup complete")
         } catch (e: Exception) {
             // Log error but don't crash
@@ -1274,28 +1349,31 @@ fun NearbyMapScreen(
                     // This prevents system gestures (like back navigation) from interfering
                     parent?.requestDisallowInterceptTouchEvent(true)
                 }
+                // Ensure attribution is disabled whenever we have access to the MapView
+                // This runs on every recomposition, so it will catch any cases where attribution gets re-enabled
+                val mapViewInstance = view as? MapView
+                mapInstance?.let { map ->
+                    map.uiSettings.setAttributionEnabled(false)
+                }
+                
                 // Set up map async callback only once
                 // The update block runs on every recomposition, so we guard against multiple calls
                 if (!mapListenersSetup) {
-                    val mapViewInstance = view as? MapView
                     mapViewInstance?.getMapAsync(object : OnMapReadyCallback {
                         override fun onMapReady(map: MapLibreMap) {
-                            android.util.Log.d("WikiWatch", "NearbyMapScreen: onMapReady called, mapInstance=${mapInstance}, listenersSetup=$mapListenersSetup")
+                            // Always disable attribution overlay (even if map was reused)
+                            map.uiSettings.setAttributionEnabled(false)
+                            
                             // Only set up once - double check to prevent race conditions
                             if (mapInstance == null && !mapListenersSetup) {
-                                android.util.Log.d("WikiWatch", "NearbyMapScreen: Initializing map instance and listeners")
                                 mapInstance = map
-                                mapListenersSetup = true
-                                
-                                // Disable MapLibre attribution overlay
-                                map.uiSettings.setAttributionEnabled(false)
-                                android.util.Log.d("WikiWatch", "NearbyMapScreen: MapLibre attribution disabled")
-                                
+                                mapListenersSetup = true                                
                                 // Disable compass and rotation-related gestures to prevent crashes
                                 // The compass indicator that appears during rotation can cause SIGSEGV crashes
                                 map.uiSettings.setCompassEnabled(false)
                                 map.uiSettings.setRotateGesturesEnabled(false)
                                 map.uiSettings.setTiltGesturesEnabled(false)
+                                map.uiSettings.setAttributionEnabled(false)
                                 
                                 // Ensure pan and scroll gestures are enabled and properly configured
                                 // This helps prevent pan gestures from being misinterpreted as swipes
@@ -1316,14 +1394,10 @@ fun NearbyMapScreen(
                                             v.parent?.requestDisallowInterceptTouchEvent(true)
                                             false // Return false to let the MapView handle the event normally
                                         }
-                                        android.util.Log.d("WikiWatch", "NearbyMapScreen: Configured MapView to prevent parent touch interception")
                                     } catch (e: Exception) {
                                         android.util.Log.w("WikiWatch", "NearbyMapScreen: Could not configure touch handling: ${e.message}")
                                     }
-                                }
-                                
-                                android.util.Log.d("WikiWatch", "NearbyMapScreen: Compass, rotation, and tilt gestures disabled; pan/zoom enabled")
-                                
+                                }                                
                                 // Set up click listeners once - they will persist
                                 // Use marker.title directly instead of markerToTitleMap to avoid reference issues
                                 map.setOnMarkerClickListener { marker ->
@@ -1353,7 +1427,7 @@ fun NearbyMapScreen(
                                         false
                                     }
                                 }
-                                
+                                map.uiSettings.setAttributionEnabled(false)
                                 map.addOnMapClickListener { _ ->
                                     selectedArticle = null
                                     true
@@ -1382,11 +1456,25 @@ fun NearbyMapScreen(
                                 
                                 android.util.Log.d("WikiWatch", "NearbyMapScreen: Map listeners setup complete")
                             } else {
-                                android.util.Log.w("WikiWatch", "NearbyMapScreen: Map already initialized or listeners already setup, skipping")
+                                android.util.Log.w("WikiWatch", "NearbyMapScreen: Map already initialized or listeners already setup, but ensuring attribution is disabled")
+                                // Map was already initialized, but ensure attribution is still disabled
+                                map.uiSettings.setAttributionEnabled(false)
+                                // Also update mapInstance if it's null but we have the map
+                                if (mapInstance == null) {
+                                    mapInstance = map
+                                }
                             }
                         }
                     })
                 }
+            }
+        }
+        
+        // Ensure attribution is disabled whenever we have access to mapInstance
+        LaunchedEffect(mapInstance) {
+            mapInstance?.let { map ->
+                map.uiSettings.setAttributionEnabled(false)
+                android.util.Log.d("WikiWatch", "NearbyMapScreen: Ensured attribution is disabled on map instance")
             }
         }
         
@@ -1397,6 +1485,8 @@ fun NearbyMapScreen(
                 // Check if style is already loaded on the map (e.g., when returning from article)
                 if (initializedMap.style != null && !styleLoaded) {
                     android.util.Log.d("WikiWatch", "NearbyMapScreen: Map style already loaded, marking as loaded")
+                    // Ensure attribution is disabled when style is already loaded
+                    initializedMap.uiSettings.setAttributionEnabled(false)
                     styleLoaded = true
                     viewModel.setStyleLoaded(true) // Persist to ViewModel
                 } else if (!styleLoaded) {
@@ -1405,6 +1495,8 @@ fun NearbyMapScreen(
                         val styleAsset = "asset://mapstyle.json"
                         initializedMap.setStyle(styleAsset) { style ->
                             android.util.Log.d("WikiWatch", "NearbyMapScreen: Style loaded successfully")
+                            // Disable attribution after style loads (style loading can reset UI settings)
+                            initializedMap.uiSettings.setAttributionEnabled(false)
                             styleLoaded = true
                             viewModel.setStyleLoaded(true)
                         }
@@ -1453,7 +1545,7 @@ fun NearbyMapScreen(
             } else if (hasThumbnails && markersInitiallyAdded) {
                 android.util.Log.d("WikiWatch", "NearbyMapScreen: Thumbnails available (${thumbnailBitmaps.size}), updating markers even though they were already added")
             }
-            
+            mapInstance?.uiSettings?.setAttributionEnabled(false)
             mapInstance?.let { initializedMap ->
                 if (styleLoaded && initializedMap.style != null) {
                     searchLocation?.let { loc ->

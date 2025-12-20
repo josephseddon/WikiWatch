@@ -89,12 +89,16 @@ fun WikiWatchApp() {
                 autoFocus = screen.autoFocus,
                 onArticleClick = { result ->
                     articleForwardStack.clear()
+                    mapViewModel.pushScreen("Search")
+                    mapViewModel.pushScreen("Article")
                     currentScreen = Screen.Article(result.title, Screen.Search())
                 },
                 onBackToArticle = { title ->
                     currentScreen = Screen.Article(title)
                 },
                 onNearbyClick = {
+                    mapViewModel.pushScreen("Search")
+                    mapViewModel.pushScreen("NearbyMap")
                     currentScreen = Screen.NearbyMap()
                 },
                 onLanguageClick = {
@@ -111,7 +115,27 @@ fun WikiWatchApp() {
                         currentScreen = Screen.Article(previousArticle, screen.previousScreen)
                     } else {
                         // No article history, go back to previous screen (or search if none)
-                        currentScreen = screen.previousScreen ?: Screen.Search()
+                        val previousScreen = screen.previousScreen
+                        // Check if we're returning to map from article BEFORE popping
+                        val isReturningToMap = previousScreen is Screen.NearbyMap
+                        when (previousScreen) {
+                            is Screen.NearbyMap -> {
+                                // When returning to map from article via BACK BUTTON:
+                                // - Set initialLat/initialLon to null so map restores full camera position
+                                // - Mark that we're NOT opening from coordinates icon
+                                mapViewModel.setOpeningFromArticleCoordinates(false)
+                                currentScreen = Screen.NearbyMap(
+                                    initialLat = null, // Set to null when returning from article via back button
+                                    initialLon = null, // Set to null when returning from article via back button
+                                    previousScreen = previousScreen.previousScreen // Restore the map's original previousScreen (Search)
+                                )
+                            }
+                            else -> {
+                                // Pop for other navigation
+                                mapViewModel.popScreen()
+                                currentScreen = previousScreen ?: Screen.Search()
+                            }
+                        }
                     }
                 },
                 onSwipeToNext = { nextTitle ->
@@ -119,8 +143,16 @@ fun WikiWatchApp() {
                     articleForwardStack.clear()
                     currentScreen = Screen.Article(nextTitle, screen.previousScreen)
                 },
-                onSearch = { currentScreen = Screen.Search(autoFocus = true) },
+                onSearch = { 
+                    mapViewModel.clearNavigationStack()
+                    currentScreen = Screen.Search(autoFocus = true) 
+                },
                 onOpenMap = { lat, lon ->
+                    // Opening map from article's coordinates icon (not back button)
+                    // Mark this so map knows to focus on coordinates but keep zoom level
+                    mapViewModel.setOpeningFromArticleCoordinates(true)
+                    mapViewModel.pushScreen("Article")
+                    mapViewModel.pushScreen("NearbyMap")
                     currentScreen = Screen.NearbyMap(initialLat = lat, initialLon = lon, previousScreen = screen)
                 },
                 forwardArticle = articleForwardStack.lastOrNull(),
@@ -137,11 +169,15 @@ fun WikiWatchApp() {
                 initialLon = screen.initialLon,
                 previousScreen = screen.previousScreen,
                 onBack = { 
+                    // Pop current screen from navigation stack
+                    mapViewModel.popScreen()
                     // Return to previous screen if available, otherwise go to search
                     currentScreen = screen.previousScreen ?: Screen.Search()
                 },
                 onArticleClick = { title ->
                     articleForwardStack.clear()
+                    mapViewModel.pushScreen("NearbyMap")
+                    mapViewModel.pushScreen("Article")
                     currentScreen = Screen.Article(title, screen)
                 },
                 viewModel = mapViewModel // Use shared ViewModel scoped to activity
