@@ -1,0 +1,14 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Chequered flag pattern - alternating black and white squares -->
+    <path
+        android:fillColor="#000000"
+        android:pathData="M0,0h6v6H0V0zM12,0h6v6h-6V0zM6,6h6v6H6V6zM18,6h6v6h-6V6zM0,12h6v6H0v-6zM12,12h6v6h-6v-6zM6,18h6v6H6v-6zM18,18h6v6h-6v-6z"/>
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M6,0h6v6H6V0zM18,0h6v6h-6V0zM0,6h6v6H0V6zM12,6h6v6h-6V6zM6,12h6v6H6v-6zM18,12h6v6h-6v-6zM0,18h6v6H0v-6zM12,18h6v6h-6v-6z"/>
+</vector>
+
