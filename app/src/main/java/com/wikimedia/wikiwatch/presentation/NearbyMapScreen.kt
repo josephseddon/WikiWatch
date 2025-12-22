@@ -38,6 +38,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -455,12 +458,7 @@ fun NearbyMapScreen(
         hasPermission = granted
     }
 
-    // Test network connectivity on startup
-    LaunchedEffect(Unit) {
-        android.util.Log.d("WikiWatch", "NearbyMapScreen: Testing network connectivity")
-        val networkTest = com.wikimedia.wikiwatch.data.WikipediaRepository.testNetwork()
-        android.util.Log.d("WikiWatch", "NearbyMapScreen: Network test result: $networkTest")
-    }
+    // Network test skipped for performance
 
     // Only request location permission if initial coordinates aren't provided
     LaunchedEffect(Unit, initialLat, initialLon) {
@@ -681,57 +679,74 @@ fun NearbyMapScreen(
             nearbyArticles = WikipediaRepository.geoSearch(loc.latitude, loc.longitude)
             android.util.Log.d("WikiWatch", "NearbyMapScreen: Geosearch returned ${nearbyArticles.size} articles")
             
-            // Load thumbnails - start with existing thumbnails from ViewModel, then load missing ones
-            android.util.Log.d("WikiWatch", "NearbyMapScreen: Starting thumbnail loading for ${nearbyArticles.size} articles")
+            // Load thumbnails asynchronously in parallel - start with existing thumbnails from ViewModel, then load missing ones
+            android.util.Log.d("WikiWatch", "NearbyMapScreen: Starting async thumbnail loading for ${nearbyArticles.size} articles")
             val bitmaps = mutableMapOf<String, Bitmap>()
             // Start with existing thumbnails from ViewModel
             bitmaps.putAll(thumbnailBitmaps)
             android.util.Log.d("WikiWatch", "NearbyMapScreen: Starting with ${bitmaps.size} existing thumbnails from ViewModel")
             
-            var thumbnailCount = bitmaps.size
-            var articlesWithThumbnailUrl = 0
-            var loadedCount = 0
-            nearbyArticles.forEach { article ->
-                if (article.thumbnailUrl != null) {
-                    articlesWithThumbnailUrl++
-                    // Only load if we don't already have this thumbnail
-                    if (!bitmaps.containsKey(article.title)) {
-                        try {
-                            withContext(Dispatchers.IO) {
+            // Filter articles that need thumbnails loaded
+            val articlesNeedingThumbnails = nearbyArticles.filter { 
+                it.thumbnailUrl != null && !bitmaps.containsKey(it.title) 
+            }
+            android.util.Log.d("WikiWatch", "NearbyMapScreen: Found ${articlesNeedingThumbnails.size} articles needing thumbnails out of ${nearbyArticles.size} total articles")
+            if (articlesNeedingThumbnails.isNotEmpty()) {
+                android.util.Log.d("WikiWatch", "NearbyMapScreen: Articles needing thumbnails: ${articlesNeedingThumbnails.map { "${it.title} (${it.thumbnailUrl})" }.joinToString(", ")}")
+            }
+            
+            // Load thumbnails asynchronously in parallel
+            val loadedThumbnails = if (articlesNeedingThumbnails.isNotEmpty()) {
+                android.util.Log.d("WikiWatch", "NearbyMapScreen: Starting async thumbnail loading for ${articlesNeedingThumbnails.size} articles")
+                coroutineScope {
+                    val thumbnailDeferreds = articlesNeedingThumbnails.map { article ->
+                        async(Dispatchers.IO) {
+                            try {
                                 android.util.Log.d("WikiWatch", "NearbyMapScreen: Loading thumbnail for ${article.title} from ${article.thumbnailUrl}")
-                                val request = Request.Builder().url(article.thumbnailUrl!!).build()
-                                android.util.Log.d("WikiWatch", "NearbyMapScreen: Executing HTTP request for thumbnail: ${article.thumbnailUrl}")
-                                val response = okHttpClient.newCall(request).execute()
-                                android.util.Log.d("WikiWatch", "NearbyMapScreen: Received HTTP response ${response.code} for ${article.title}")
-                                if (response.isSuccessful) {
-                                    response.body?.byteStream()?.let { stream ->
-                                        val bitmap = BitmapFactory.decodeStream(stream)
-                                        if (bitmap != null) {
-                                            bitmaps[article.title] = createCircularBitmap(bitmap, 80)
-                                            thumbnailCount++
-                                            loadedCount++
-                                            android.util.Log.d("WikiWatch", "NearbyMapScreen: Successfully loaded thumbnail for ${article.title}")
-                                        } else {
-                                            android.util.Log.w("WikiWatch", "NearbyMapScreen: Failed to decode bitmap for ${article.title} - bitmap was null")
-                                        }
-                                    } ?: run {
-                                        android.util.Log.w("WikiWatch", "NearbyMapScreen: Response body was null for ${article.title}")
+                            val request = Request.Builder().url(article.thumbnailUrl!!).build()
+                            val response = okHttpClient.newCall(request).execute()
+                            android.util.Log.d("WikiWatch", "NearbyMapScreen: Received HTTP response ${response.code} for ${article.title}")
+                            
+                            if (response.isSuccessful) {
+                                response.body?.byteStream()?.let { stream ->
+                                    val bitmap = BitmapFactory.decodeStream(stream)
+                                    if (bitmap != null) {
+                                        val circularBitmap = createCircularBitmap(bitmap, 80)
+                                        android.util.Log.d("WikiWatch", "NearbyMapScreen: Successfully loaded thumbnail for ${article.title}")
+                                        Pair(article.title, circularBitmap)
+                                    } else {
+                                        android.util.Log.w("WikiWatch", "NearbyMapScreen: Failed to decode bitmap for ${article.title} - bitmap was null")
+                                        null
                                     }
-                                } else {
-                                    android.util.Log.w("WikiWatch", "NearbyMapScreen: HTTP ${response.code} for ${article.title} - ${response.message}")
+                                } ?: run {
+                                    android.util.Log.w("WikiWatch", "NearbyMapScreen: Response body was null for ${article.title}")
+                                    null
                                 }
+                            } else {
+                                android.util.Log.w("WikiWatch", "NearbyMapScreen: HTTP ${response.code} for ${article.title} - ${response.message}")
+                                null
                             }
                         } catch (e: Exception) {
                             android.util.Log.w("WikiWatch", "NearbyMapScreen: Failed to load thumbnail for ${article.title}: ${e.message}", e)
+                            null
                         }
-                    } else {
-                        android.util.Log.d("WikiWatch", "NearbyMapScreen: Thumbnail for ${article.title} already exists, skipping")
                     }
-                } else {
-                    android.util.Log.d("WikiWatch", "NearbyMapScreen: Article ${article.title} has no thumbnailUrl")
+                    }
+                    // Wait for all thumbnails to load
+                    android.util.Log.d("WikiWatch", "NearbyMapScreen: Waiting for ${thumbnailDeferreds.size} thumbnail downloads to complete")
+                    thumbnailDeferreds.awaitAll().filterNotNull()
                 }
+            } else {
+                android.util.Log.d("WikiWatch", "NearbyMapScreen: No thumbnails to load (all already cached or no thumbnail URLs)")
+                emptyList<Pair<String, Bitmap>>()
             }
-            android.util.Log.d("WikiWatch", "NearbyMapScreen: Loaded $loadedCount new thumbnails, total $thumbnailCount out of $articlesWithThumbnailUrl articles with thumbnail URLs (total articles: ${nearbyArticles.size})")
+            loadedThumbnails.forEach { (title, bitmap) ->
+                bitmaps[title] = bitmap
+            }
+            
+            val articlesWithThumbnailUrl = nearbyArticles.count { it.thumbnailUrl != null }
+            val loadedCount = loadedThumbnails.size
+            android.util.Log.d("WikiWatch", "NearbyMapScreen: Loaded $loadedCount new thumbnails asynchronously, total ${bitmaps.size} out of $articlesWithThumbnailUrl articles with thumbnail URLs (total articles: ${nearbyArticles.size})")
             thumbnailBitmaps = bitmaps
             isLoading = false
             initialGeosearchDone = true

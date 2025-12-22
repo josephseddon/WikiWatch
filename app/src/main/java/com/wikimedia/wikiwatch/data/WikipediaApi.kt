@@ -119,7 +119,15 @@ data class GeoSearchResponse(
 )
 
 data class GeoSearchQuery(
-    val geosearch: List<GeoSearchResult>?
+    val pages: Map<String, GeoSearchPageInfo>?
+)
+
+data class GeoSearchPageInfo(
+    val pageid: Long?,
+    val title: String?,
+    val coordinates: List<Coordinate>?,
+    val thumbnail: PageThumbnail?,
+    val description: String?
 )
 
 data class GeoSearchResult(
@@ -141,6 +149,11 @@ interface WikipediaApi {
 
     @GET("w/api.php?action=query&prop=pageimages|description&format=json&pithumbsize=150")
     suspend fun getPageImages(
+        @Query("titles") titles: String
+    ): PageImagesResponse
+
+    @GET("w/api.php?action=query&prop=pageimages|description&format=json&pithumbsize=80")
+    suspend fun getPageImagesForMap(
         @Query("titles") titles: String
     ): PageImagesResponse
 
@@ -172,16 +185,49 @@ interface WikipediaApi {
         @Path("title") title: String
     ): SummaryResponse
 
-    @GET("w/api.php?action=query&list=geosearch&format=json&gslimit=20&gsradius=10000")
+    @GET("w/api.php?action=query&generator=geosearch&prop=coordinates|pageimages|description&format=json&ggslimit=20&ggsradius=10000&pithumbsize=80&colimit=max")
     suspend fun geoSearch(
-        @Query("gscoord") coordinates: String
+        @Query("ggscoord") coordinates: String
     ): GeoSearchResponse
 
     @GET("api/rest_v1/feed/did-you-know")
     suspend fun getDidYouKnow(): List<DidYouKnowEntry>
+    
+    @GET("api/rest_v1/feed/featured/{year}/{month}/{day}")
+    suspend fun getNews(
+        @Path("year") year: String,
+        @Path("month") month: String,
+        @Path("day") day: String
+    ): FeaturedFeedResponse
 }
 
 data class DidYouKnowEntry(
     val html: String,
     val text: String
+)
+
+data class FeaturedFeedResponse(
+    val news: List<NewsEntry>?,
+    val onthisday: List<OnThisDayEntry>?
+)
+
+data class NewsEntry(
+    val story: String?,
+    val links: List<NewsLink>?
+)
+
+data class NewsLink(
+    val type: String?,
+    val title: String?,
+    val thumbnail: Thumbnail?
+)
+
+data class OnThisDayEntry(
+    val text: String?,
+    val pages: List<OnThisDayPage>?
+)
+
+data class OnThisDayPage(
+    val title: String?,
+    val thumbnail: Thumbnail?
 )

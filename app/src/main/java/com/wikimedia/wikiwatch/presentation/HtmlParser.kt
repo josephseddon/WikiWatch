@@ -23,7 +23,8 @@ fun HtmlText(
         text = annotatedString,
         style = TextStyle(
             color = androidx.compose.ui.graphics.Color.White,
-            fontSize = 11.sp
+            fontSize = 14.sp,
+            lineHeight = 20.sp
         ),
         onClick = { offset ->
             annotatedString.getStringAnnotations(

@@ -224,36 +224,59 @@ object WikipediaRepository {
             }
             
             Log.d("WikiWatch", "WikipediaRepository: api.geoSearch completed, parsing response")
-            val results = response.query?.geosearch ?: emptyList()
-            Log.d("WikiWatch", "WikipediaRepository: geoSearch returned ${results.size} results")
+            val pagesMap = response.query?.pages
+            Log.d("WikiWatch", "WikipediaRepository: Pages map size: ${pagesMap?.size ?: 0}")
             
-            // Get thumbnails and descriptions for results
-            if (results.isNotEmpty()) {
-                val titles = results.joinToString("|") { it.title }
-                Log.d("WikiWatch", "WikipediaRepository: Fetching page images for ${results.size} articles")
-                
-                val imagesResponse = withTimeout(30000L) { // 30 second timeout
-                    api.getPageImages(titles)
-                }
-                
-                Log.d("WikiWatch", "WikipediaRepository: Page images fetched, parsing data")
-                val pageData = imagesResponse.query?.pages?.values?.associate { 
-                    it.title to Pair(it.thumbnail?.source, it.description)
-                } ?: emptyMap()
-                
-                val resultsWithData = results.map { result ->
-                    val data = pageData[result.title]
-                    result.copy(
-                        thumbnailUrl = data?.first,
-                        description = data?.second
-                    )
-                }
-                
-                Log.d("WikiWatch", "WikipediaRepository: GeoSearch complete with ${resultsWithData.size} articles")
-                return@withContext resultsWithData
+            if (pagesMap == null || pagesMap.isEmpty()) {
+                Log.d("WikiWatch", "WikipediaRepository: No pages found in geosearch response")
+                return@withContext emptyList()
             }
             
-            Log.d("WikiWatch", "WikipediaRepository: GeoSearch found ${results.size} articles (no thumbnails needed)")
+            // Log details about each page to debug coordinate parsing
+            pagesMap.values.forEach { page ->
+                val coordsSize = page.coordinates?.size ?: 0
+                val hasCoords = coordsSize > 0
+                Log.d("WikiWatch", "WikipediaRepository: Page '${page.title}' (pageid: ${page.pageid}) - coordinates list: ${if (page.coordinates == null) "null" else "not null"}, size: $coordsSize, has thumbnail: ${page.thumbnail != null}")
+                if (hasCoords) {
+                    page.coordinates?.forEachIndexed { index, coord ->
+                        Log.d("WikiWatch", "WikipediaRepository:   Coordinate[$index]: lat=${coord.lat}, lon=${coord.lon}, globe=${coord.globe}")
+                    }
+                } else {
+                    Log.w("WikiWatch", "WikipediaRepository:   WARNING: No coordinates found for '${page.title}' (pageid: ${page.pageid}) - coordinates field is ${if (page.coordinates == null) "null" else "empty list"}")
+                }
+            }
+            
+            // Convert pages to GeoSearchResult list
+            // With generator=geosearch, all data (coordinates, thumbnails, descriptions) is in pages
+            val results = pagesMap.values.mapNotNull { page ->
+                if (page.title == null) {
+                    Log.w("WikiWatch", "WikipediaRepository: Skipping page with null title (pageid: ${page.pageid})")
+                    return@mapNotNull null
+                }
+                
+                val coord = page.coordinates?.firstOrNull()
+                if (coord != null) {
+                    // Distance not provided by generator, so we'll calculate it if needed later
+                    GeoSearchResult(
+                        pageid = page.pageid ?: 0L,
+                        title = page.title,
+                        lat = coord.lat,
+                        lon = coord.lon,
+                        dist = 0.0, // Distance not provided by generator
+                        thumbnailUrl = page.thumbnail?.source,
+                        description = page.description
+                    )
+                } else {
+                    Log.w("WikiWatch", "WikipediaRepository: Skipping page '${page.title}' (pageid: ${page.pageid}) - coordinates are missing (coordinates field: ${if (page.coordinates == null) "null" else "empty"})")
+                    null
+                }
+            }
+            
+            val articlesWithThumbnails = results.count { it.thumbnailUrl != null }
+            Log.d("WikiWatch", "WikipediaRepository: GeoSearch complete with ${results.size} articles, ${articlesWithThumbnails} have thumbnails")
+            if (articlesWithThumbnails > 0) {
+                Log.d("WikiWatch", "WikipediaRepository: Sample article with thumbnail: ${results.firstOrNull { it.thumbnailUrl != null }?.title}")
+            }
             results
         } catch (e: TimeoutCancellationException) {
             Log.e("WikiWatch", "WikipediaRepository: GeoSearch timed out after 30 seconds", e)
@@ -310,6 +333,33 @@ object WikipediaRepository {
             throw e
         } catch (e: Exception) {
             Log.e("WikiWatch", "WikipediaRepository: getDidYouKnow error: ${e.message}", e)
+            emptyList()
+        }
+    }
+    
+    suspend fun getNews(): List<com.wikimedia.wikiwatch.data.NewsEntry> = withContext(Dispatchers.IO) {
+        try {
+            Log.d("WikiWatch", "WikipediaRepository: Starting getNews")
+            // Get today's date for the featured feed
+            val calendar = java.util.Calendar.getInstance()
+            val year = calendar.get(java.util.Calendar.YEAR).toString()
+            val month = String.format("%02d", calendar.get(java.util.Calendar.MONTH) + 1) // Month is 0-based
+            val day = String.format("%02d", calendar.get(java.util.Calendar.DAY_OF_MONTH))
+            
+            val response = withTimeout(10000L) { // 10 second timeout
+                api.getNews(year, month, day)
+            }
+            val newsEntries = response.news ?: emptyList()
+            Log.d("WikiWatch", "WikipediaRepository: Fetched ${newsEntries.size} news entries")
+            newsEntries
+        } catch (e: TimeoutCancellationException) {
+            Log.e("WikiWatch", "WikipediaRepository: getNews timed out after 10 seconds", e)
+            emptyList()
+        } catch (e: CancellationException) {
+            Log.e("WikiWatch", "WikipediaRepository: getNews was cancelled", e)
+            throw e
+        } catch (e: Exception) {
+            Log.e("WikiWatch", "WikipediaRepository: getNews error: ${e.message}", e)
             emptyList()
         }
     }

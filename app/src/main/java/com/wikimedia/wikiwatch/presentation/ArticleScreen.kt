@@ -22,6 +22,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import android.content.Intent
+import android.net.Uri
+import androidx.core.content.ContextCompat
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -39,6 +42,9 @@ import coil.compose.SubcomposeAsyncImage
 import coil.request.ImageRequest
 import com.wikimedia.wikiwatch.data.SearchResult
 import com.wikimedia.wikiwatch.data.WikipediaRepository
+import com.wikimedia.wikiwatch.util.WikipediaAppDetector
+import kotlinx.coroutines.launch
+import androidx.compose.runtime.rememberCoroutineScope
 import okhttp3.OkHttpClient
 
 @Composable
@@ -61,6 +67,7 @@ fun ArticleScreen(
     var isLoading by remember { mutableStateOf(true) }
     val scrollState = rememberScrollState()
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     
     // Scroll to hide search bar on load
     LaunchedEffect(title) {
@@ -332,6 +339,39 @@ fun ArticleScreen(
                     
                     Spacer(modifier = Modifier.height(32.dp))
                 }
+                
+                // Open in Wikipedia app button
+                Spacer(modifier = Modifier.height(16.dp))
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 8.dp)
+                        .background(Color(0xFF2A2A2A), shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                        .clickable {
+                            android.util.Log.d("WikiWatch", "ArticleScreen: Button clicked for article: $title")
+                            coroutineScope.launch {
+                                try {
+                                    val languageCode = WikipediaRepository.getCurrentLanguage()
+                                    android.util.Log.d("WikiWatch", "ArticleScreen: Launching Wikipedia app on phone with language: $languageCode")
+                                    WikipediaAppDetector.openWikipediaArticleOnPhone(context, title, languageCode)
+                                    android.util.Log.d("WikiWatch", "ArticleScreen: WikipediaAppDetector.openWikipediaArticleOnPhone completed")
+                                } catch (e: Exception) {
+                                    android.util.Log.e("WikiWatch", "ArticleScreen: Error launching Wikipedia app: ${e.message}", e)
+                                    e.printStackTrace()
+                                }
+                            }
+                        }
+                        .padding(12.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "Open on phone",
+                        color = Color(0xFF6BA5FF),
+                        fontSize = 12.sp,
+                        textAlign = TextAlign.Center
+                    )
+                }
+                Spacer(modifier = Modifier.height(16.dp))
             }
             
             // Gradient overlay from title area that fades as you scroll up

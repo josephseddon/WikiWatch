@@ -22,10 +22,10 @@ import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
 import androidx.wear.compose.foundation.lazy.ScalingLazyListState
 import androidx.wear.compose.foundation.lazy.items
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
-import androidx.wear.compose.material.Chip
-import androidx.wear.compose.material.ChipDefaults
 import androidx.wear.compose.material.MaterialTheme
 import androidx.wear.compose.material.Text
+import androidx.wear.compose.material3.Button
+import androidx.wear.compose.material3.ButtonDefaults
 import androidx.compose.ui.platform.LocalContext
 import com.wikimedia.wikiwatch.data.WikipediaLanguage
 import com.wikimedia.wikiwatch.data.WikipediaRepository
@@ -83,15 +83,14 @@ fun LanguageSelectionScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colors.background)
-            .padding(16.dp),
+            .background(MaterialTheme.colors.background),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         // Back button and filter input - centered
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = 8.dp, bottom = 8.dp),
+                .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.Center
         ) {
@@ -154,31 +153,42 @@ fun LanguageSelectionScreen(
         } else {
             ScalingLazyColumn(
                 state = scrollState,
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(top = 0.dp)
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp),
+                contentPadding = PaddingValues(
+                    top = 0.dp,
+                    bottom = 16.dp // Add bottom padding to prevent cutoff
+                )
             ) {
-                items(filteredLanguages) { language ->
-                    Chip(
+                items(
+                    items = filteredLanguages,
+                    key = { it.languageCode }
+                ) { language ->
+                    Button(
                         onClick = { onLanguageSelected(language) },
-                        label = {
-                            Text(
-                                text = language.localName,
-                                fontSize = 11.sp,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                color = if (language.languageCode == currentLanguageCode) Color.White else Color.Gray
-                            )
-                        },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(28.dp)
-                            .padding(vertical = 1.dp),
+                            .padding(vertical = 2.dp),
                         colors = if (language.languageCode == currentLanguageCode) {
-                            ChipDefaults.primaryChipColors()
+                            ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFF6BA5FF) // Material 3 primary color
+                            )
                         } else {
-                            ChipDefaults.secondaryChipColors()
+                            ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFF2C2C2C) // Material 3 surface container
+                            )
                         }
-                    )
+                    ) {
+                        Text(
+                            text = language.localName,
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            color = if (language.languageCode == currentLanguageCode) Color.White else Color(0xFFE0E0E0) // Material 3 onSurface
+                        )
+                    }
                 }
             }
         }

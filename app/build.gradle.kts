@@ -5,12 +5,12 @@ plugins {
 
 android {
     namespace = "com.wikimedia.wikiwatch"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.wikimedia.wikiwatch"
         minSdk = 30
-        targetSdk = 34
+        targetSdk = 36
         versionCode = 1
         versionName = "1.0"
         vectorDrawables {
@@ -56,6 +56,9 @@ dependencies {
     implementation(libs.ui.tooling.preview)
     implementation(libs.compose.material)
     implementation(libs.compose.foundation)
+    implementation("androidx.compose.foundation:foundation:1.5.4")
+    // Material 3 for Wear OS
+    implementation(libs.compose.material3)
     implementation(libs.activity.compose)
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.6.2")
     implementation(libs.core.splashscreen)
@@ -71,4 +74,6 @@ dependencies {
     implementation("com.google.android.gms:play-services-location:21.0.1")
     // MapLibre GL for maps with Kartotherian tiles
     implementation("org.maplibre.gl:android-sdk:11.6.0")
+    // Wear Remote Interactions for launching activities on companion devices
+    implementation("androidx.wear:wear-remote-interactions:1.0.0")
 }
